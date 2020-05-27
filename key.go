@@ -1,5 +1,7 @@
 package gobeeq
 
+import "errors"
+
 type prefix interface {
 	keyPrefix() string
 }
@@ -21,3 +23,11 @@ const (
 func (k key) use(p prefix) string {
 	return p.keyPrefix() + string(k)
 }
+
+var (
+	ErrRedisClientRequired      = errors.New("bq: Redis client is required")
+	ErrInvalidResult            = errors.New("bq: invalid Redis result")
+	ErrQueueClosed              = errors.New("bq: queue is already closed")
+	ErrHandlerAlreadyRegistered = errors.New("bq: handler already registered")
+	ErrTimeout                  = errors.New("bq: timeout")
+)

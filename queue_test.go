@@ -75,6 +75,45 @@ func TestQueueRunning(t *testing.T) {
 	// TODO pause
 }
 
+func TestQueueClose(t *testing.T) {
+	var i int
+	newQueue := func() *Queue {
+		i++
+		queue, err := NewQueue(fmt.Sprintf("test-queue-close-%d", i), client, nil)
+		assert.NoError(t, err)
+
+		err = queue.Process(func(ctx context.Context, j *Job) error {
+			t.Log("processing job:", j)
+			time.Sleep(5 * time.Second)
+			return nil
+		})
+		assert.NoError(t, err)
+		return queue
+	}
+
+	t.Run("Wait for finish", func(t *testing.T) {
+		queue := newQueue()
+		j, err := queue.NewJob("data").Save()
+		assert.NoError(t, err)
+		assert.NotEmpty(t, j.Id)
+
+		time.Sleep(time.Second)
+		err = queue.Close()
+		assert.NoError(t, err)
+	})
+
+	t.Run("Not processed", func(t *testing.T) {
+		queue := newQueue()
+		j, err := queue.NewJob("data").Save()
+		assert.NoError(t, err)
+		assert.NotEmpty(t, j.Id)
+
+		time.Sleep(time.Second)
+		err = queue.CloseTimeout(2 * time.Second)
+		assert.EqualError(t, err, "bq: jobs are not processed after 2s")
+	})
+}
+
 func TestQueueDestroy(t *testing.T) {
 	queue, err := NewQueue("test-queue-destroy", client, nil)
 	assert.NoError(t, err)

@@ -44,6 +44,13 @@ func (j *Job) SetId(id string) *Job {
 	return j
 }
 
+func (j *Job) Timeout(t int64) *Job {
+	if t >= 0 {
+		j.options.Timeout = t
+	}
+	return j
+}
+
 func (j *Job) Save() (*Job, error) {
 	data, err := j.ToData()
 	if err != nil {

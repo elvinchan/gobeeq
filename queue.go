@@ -2,7 +2,6 @@ package gobeeq
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -24,13 +23,6 @@ func SetLogger(l *log.Logger) {
 	logger = l
 }
 
-var (
-	ErrRedisClientRequired      = errors.New("bq: Redis client is required")
-	ErrInvalidResult            = errors.New("bq: invalid Redis result")
-	ErrQueueClosed              = errors.New("bq: queue is already closed")
-	ErrHandlerAlreadyRegistered = errors.New("bq: handler already registered")
-)
-
 type Queue struct {
 	redis           *redis.Client
 	config          *Config
@@ -40,7 +32,7 @@ type Queue struct {
 	queued, running int64
 	closeStatus     uint32 // 0 -> normal, 1 -> closing, 2 -> closed
 	checkTimer      *time.Timer
-	stopChan        chan int
+	stopCh          chan struct{}
 	wg              sync.WaitGroup
 }
 
@@ -52,10 +44,10 @@ func NewQueue(name string, r *redis.Client, config *Config) (*Queue, error) {
 		config = defaultConfig
 	}
 	q := &Queue{
-		redis:    r,
-		config:   config,
-		name:     name,
-		stopChan: make(chan int),
+		redis:  r,
+		config: config,
+		name:   name,
+		stopCh: make(chan struct{}),
 	}
 	return q, q.ensureScripts()
 }
@@ -174,7 +166,6 @@ func (q *Queue) jobTick() {
 	}
 	if err := q.runJob(j); err != nil {
 		logger.Fatal(err)
-		return
 	}
 	atomic.AddInt64(&q.running, -1)
 	atomic.AddInt64(&q.queued, 1)
@@ -194,7 +185,6 @@ func (q *Queue) runJob(j *Job) error {
 				if err := q.preventStall(j.Id); err != nil {
 					logger.Fatal(err)
 				}
-				return
 			case <-done:
 				return
 			}
@@ -206,17 +196,24 @@ func (q *Queue) runJob(j *Job) error {
 		q.wg.Done()
 		done <- struct{}{}
 	}()
-	err := q.handler(context.Background(), j)
-	if err != nil {
-		logger.Fatal(err)
+
+	var err error
+	if j.options.Timeout == 0 {
+		err = q.handler(context.Background(), j)
+	} else {
+		errc := make(chan error, 1)
+		go func() {
+			errc <- q.handler(context.Background(), j)
+		}()
+		select {
+		case err = <-errc:
+		case <-time.After(time.Duration(j.options.Timeout) * time.Second):
+			err = ErrTimeout
+		}
 	}
 	// TODO: backoff
 	// finish job
-	err = q.finishJob(err, j.data, j)
-	if err != nil {
-		logger.Fatal(err)
-	}
-	return err
+	return q.finishJob(err, j.data, j)
 }
 
 func (q *Queue) preventStall(id string) error {
@@ -238,7 +235,7 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 			if err := q.doStalledJobCheck(); err != nil {
 				logger.Fatal(err)
 			}
-		case <-q.stopChan:
+		case <-q.stopCh:
 			return
 		}
 	}
@@ -349,7 +346,10 @@ func (q *Queue) CloseTimeout(timeout time.Duration) error {
 	if !atomic.CompareAndSwapUint32(&q.closeStatus, 0, 1) {
 		return ErrQueueClosed
 	}
-	return q.WaitTimeout(timeout)
+	close(q.stopCh)
+	err := q.WaitTimeout(timeout)
+	atomic.StoreUint32(&q.closeStatus, 2)
+	return err
 }
 
 func (q *Queue) WaitTimeout(timeout time.Duration) error {
@@ -364,7 +364,6 @@ func (q *Queue) WaitTimeout(timeout time.Duration) error {
 	case <-time.After(timeout):
 		return fmt.Errorf("bq: jobs are not processed after %s", timeout)
 	}
-
 	return nil
 }
 
