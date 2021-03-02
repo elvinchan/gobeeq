@@ -2,6 +2,8 @@ package gobeeq
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -30,9 +32,11 @@ type Queue struct {
 	handler         ProcessFunc
 	concurrency     int64
 	queued, running int64
-	closeStatus     uint32 // 0 -> normal, 1 -> closing, 2 -> closed
+	status          uint32 // 0 -> running, 1 -> closing, 2 -> closed
 	checkTimer      *time.Timer
+	delayedTimer    *EagerTimer
 	stopCh          chan struct{}
+	events          map[string]func(args ...interface{})
 	wg              sync.WaitGroup
 }
 
@@ -49,7 +53,60 @@ func NewQueue(name string, r *redis.Client, config *Config) (*Queue, error) {
 		name:   name,
 		stopCh: make(chan struct{}),
 	}
+	if q.config.ActiveDelayedJobs {
+		var err error
+		q.delayedTimer, err = NewEagerTimer(
+			q.config.NearTermWindow, q.ActiveDelayed,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var channels []string
+	if q.config.GetEvents {
+		channels = append(channels, keyEvents.use(q))
+	}
+	if q.config.ActiveDelayedJobs {
+		channels = append(channels, keyEarlierDelayed.use(q))
+	}
+	if len(channels) > 0 {
+		pb := q.redis.Subscribe(channels...)
+		go func() {
+			for {
+				select {
+				case m := <-pb.Channel():
+					q.handleMessage(m)
+				case <-q.stopCh:
+					return
+				}
+			}
+		}()
+	}
 	return q, q.ensureScripts()
+}
+
+func (q *Queue) handleMessage(m *redis.Message) {
+	if m.Channel == keyEarlierDelayed.use(q) {
+		// We should only receive these messages if activateDelayedJobs is
+		// enabled.
+		t, _ := strconv.ParseInt(m.Payload, 10, 64)
+		q.delayedTimer.Schedule(time.Unix(t, 0))
+		return
+	}
+
+	type Message struct {
+		Id    int64  `json:"id"`
+		Event string `json:"event"`
+		Data  string `json:"data"`
+	}
+	var msg Message
+	if err := json.Unmarshal([]byte(m.Payload), &msg); err != nil {
+		return
+	}
+	if fn := q.events["job "+msg.Event]; fn != nil {
+		fn(msg.Id, msg.Data)
+	}
+	// TODO
 }
 
 func (q *Queue) keyPrefix() string {
@@ -106,6 +163,72 @@ func (q *Queue) newJobWithId(id string, data string, options *Options) *Job {
 	}
 }
 
+func (q *Queue) GetJob(id string) (*Job, error) {
+	if !q.commandable(false) {
+		return nil, nil
+	}
+	return Job{}.fromId(q, id)
+}
+
+// GetJobs Get jobs from queue type.
+func (q *Queue) GetJobs(s Status, start, end int64, size int) ([]Job, error) {
+	if start <= 0 {
+		start = 1
+	}
+	if end <= 0 {
+		end = 1
+	}
+	if !q.commandable(false) {
+		return nil, nil
+	}
+	k := key(s).use(q)
+	var (
+		ids []string
+		err error
+	)
+	switch s {
+	case StatusFailed, StatusSucceeded:
+		ids, err = q.scanForJobs(k, 0, size, nil)
+	case StatusWaiting, StatusActive:
+		ids, err = q.redis.LRange(k, start, end).Result()
+	case StatusDelayed:
+		ids, err = q.redis.ZRange(k, start, end).Result()
+	default:
+		return nil, errors.New("invalid status")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return Job{}.fromIds(q, ids)
+}
+
+func (q *Queue) scanForJobs(key string, cursor uint64, size int, ids map[string]struct{}) ([]string, error) {
+	if size > q.config.RedisScanCount {
+		size = q.config.RedisScanCount
+	}
+	if ids == nil {
+		ids = make(map[string]struct{})
+	}
+	keys, nextCursor, err := q.redis.SScan(key, cursor, "COUNT", int64(size)).Result()
+	if err != nil {
+		return nil, err
+	}
+	for i := range keys {
+		if len(ids) == int(size) {
+			break
+		}
+		ids[keys[i]] = struct{}{}
+	}
+	if nextCursor == 0 || len(ids) >= int(size) {
+		results := make([]string, len(ids))
+		for id := range ids {
+			results = append(results, id)
+		}
+		return results, nil
+	}
+	return q.scanForJobs(key, nextCursor, size-len(ids), ids)
+}
+
 type ProcessFunc func(context.Context, *Job) error
 
 func (q *Queue) ProcessMulti(concurrency int64, h func(context.Context, *Job) error) error {
@@ -133,7 +256,7 @@ func (q *Queue) Process(h func(context.Context, *Job) error) error {
 }
 
 func (q *Queue) commandable(strict bool) bool {
-	status := atomic.LoadUint32(&q.closeStatus)
+	status := atomic.LoadUint32(&q.status)
 	return status == 0 || (!strict && status == 1)
 }
 
@@ -220,6 +343,7 @@ func (q *Queue) preventStall(id string) error {
 	return q.redis.SRem(keyStalling.use(q), id).Err()
 }
 
+// CheckStalledJobs Check for stalled jobs.
 func (q *Queue) CheckStalledJobs(interval time.Duration) {
 	if err := q.doStalledJobCheck(); err != nil {
 		logger.Fatal(err)
@@ -262,7 +386,7 @@ func (q *Queue) getNextJob() (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Job{}.FromId(q, id)
+	return Job{}.fromId(q, id)
 }
 
 func (q *Queue) finishJob(err error, data interface{}, job *Job) error {
@@ -338,17 +462,19 @@ func (q *Queue) CheckHealth() (*QueueStatus, error) {
 	}, nil
 }
 
+// Close close queue and wait for 30s to
 func (q *Queue) Close() error {
 	return q.CloseTimeout(30 * time.Second)
 }
 
 func (q *Queue) CloseTimeout(timeout time.Duration) error {
-	if !atomic.CompareAndSwapUint32(&q.closeStatus, 0, 1) {
+	if !atomic.CompareAndSwapUint32(&q.status, 0, 1) {
 		return ErrQueueClosed
 	}
 	close(q.stopCh)
+	q.delayedTimer.Stop()
 	err := q.WaitTimeout(timeout)
-	atomic.StoreUint32(&q.closeStatus, 2)
+	atomic.StoreUint32(&q.status, 2)
 	return err
 }
 
@@ -361,14 +487,14 @@ func (q *Queue) WaitTimeout(timeout time.Duration) error {
 
 	select {
 	case <-done:
+		return nil
 	case <-time.After(timeout):
 		return fmt.Errorf("bq: jobs are not processed after %s", timeout)
 	}
-	return nil
 }
 
 func (q *Queue) IsRunning() bool {
-	return atomic.LoadUint32(&q.closeStatus) == 0
+	return atomic.LoadUint32(&q.status) == 0
 }
 
 func (q *Queue) Destory() error {
@@ -386,4 +512,41 @@ func (q *Queue) Destory() error {
 		keyFailed.use(q),
 		keyDelayed.use(q),
 	).Err()
+}
+
+// SaveAll Save all the provided jobs, without waiting for each job to be created.
+// This pipelines the requests which avoids the waiting 2N*RTT for N jobs -
+// the client waits to receive each command result before sending the next
+// command.
+func (q *Queue) SaveAll(jobs []Job) []error {
+	// TODO
+	return nil
+}
+
+func (q *Queue) ActiveDelayed() error {
+	if !q.config.ActiveDelayedJobs {
+		return nil
+	}
+	rst, err := q.config.ScriptsProvider.RaiseDelayedJobs().Run(
+		q.redis,
+		[]string{
+			keyDelayed.use(q),
+			keyWaiting.use(q),
+		},
+		time.Now().Unix(),
+		q.config.DelayedDebounce.Milliseconds(),
+	).Result()
+	if err != nil {
+		return err
+	}
+	rrst := rst.([]interface{})
+	numRaised := rrst[0].(int)
+	nextOpportunity := rrst[1].(int)
+	if numRaised > 0 {
+		if fn, ok := q.events["raised jobs"]; ok {
+			fn(numRaised)
+		}
+	}
+	q.delayedTimer.Schedule(time.Unix(int64(nextOpportunity), 0))
+	return nil
 }

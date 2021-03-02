@@ -12,8 +12,9 @@ func TestEagerTimer(t *testing.T) {
 		t.Parallel()
 
 		flag := false
-		et, err := NewEagerTimer(time.Millisecond, func() {
+		et, err := NewEagerTimer(time.Millisecond, func() error {
 			flag = true
+			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)
@@ -26,8 +27,9 @@ func TestEagerTimer(t *testing.T) {
 		t.Parallel()
 
 		flag := false
-		et, err := NewEagerTimer(time.Millisecond, func() {
+		et, err := NewEagerTimer(time.Millisecond, func() error {
 			flag = true
+			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)
@@ -45,8 +47,9 @@ func TestEagerTimer(t *testing.T) {
 
 		now := time.Now()
 		flag := false
-		et, err := NewEagerTimer(time.Second, func() {
+		et, err := NewEagerTimer(time.Second, func() error {
 			flag = true
+			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)
@@ -66,8 +69,9 @@ func TestEagerTimer(t *testing.T) {
 
 		now := time.Now()
 		flag := false
-		et, err := NewEagerTimer(time.Second, func() {
+		et, err := NewEagerTimer(time.Second, func() error {
 			flag = true
+			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)

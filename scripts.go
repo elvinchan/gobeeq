@@ -7,6 +7,8 @@ type (
 		CheckStalledJobs() *redis.Script
 		AddJob() *redis.Script
 		RemoveJob() *redis.Script
+		AddDelayedJob() *redis.Script
+		RaiseDelayedJobs() *redis.Script
 	}
 
 	DefaultScriptsProvider struct{}
@@ -22,6 +24,14 @@ func (DefaultScriptsProvider) AddJob() *redis.Script {
 
 func (DefaultScriptsProvider) RemoveJob() *redis.Script {
 	return redis.NewScript(scriptRemoveJob)
+}
+
+func (DefaultScriptsProvider) AddDelayedJob() *redis.Script {
+	return redis.NewScript(scriptAddDelayedJob)
+}
+
+func (DefaultScriptsProvider) RaiseDelayedJobs() *redis.Script {
+	return redis.NewScript(scriptRaiseDelayedJobs)
 }
 
 /*
@@ -113,3 +123,59 @@ redis.call("srem", KEYS[2], jobId)
 redis.call("srem", KEYS[5], jobId)
 redis.call("hdel", KEYS[6], jobId)
 redis.call("zrem", KEYS[7], jobId)`
+
+/*
+key 1 -> bq:name:id (job ID counter)
+key 2 -> bq:name:jobs
+key 3 -> bq:name:delayed
+key 4 -> bq:name:earlierDelayed
+arg 1 -> job id
+arg 2 -> job data
+arg 3 -> job delay timestamp
+*/
+const scriptAddDelayedJob = `local jobId = ARGV[1]
+if jobId == "" then
+  jobId = "" .. redis.call("incr", KEYS[1])
+end
+if redis.call("hexists", KEYS[2], jobId) == 1 then return nil end
+redis.call("hset", KEYS[2], jobId, ARGV[2])
+redis.call("zadd", KEYS[3], tonumber(ARGV[3]), jobId)
+
+-- if this job is the new head, alert the workers that they need to update their timers
+-- if we try to do something tricky like checking the delta between this job and the next job, we
+-- can enter a pathological case where jobs incrementally creep sooner, and each one never updates
+-- the timers
+local head = redis.call("zrange", KEYS[3], 0, 0)
+if head[1] == jobId then
+  redis.call("publish", KEYS[4], ARGV[3])
+end
+
+return jobId`
+
+/*
+key 1 -> bq:name:delayed
+key 2 -> bq:name:waiting
+arg 1 -> ms timestamp ("now")
+arg 2 -> debounce window (in milliseconds)
+
+returns number of jobs raised and the timestamp of the next job (within the near-term window)
+*/
+const scriptRaiseDelayedJobs = `local now = tonumber(ARGV[1])
+
+-- raise any delayed jobs that are now valid by moving from delayed to waiting
+local raising = redis.call("zrangebyscore", KEYS[1], 0, ARGV[1])
+local numRaising = #raising
+
+if numRaising > 0 then
+  redis.call("lpush", KEYS[2], unpack(raising))
+  redis.call("zremrangebyscore", KEYS[1], 0, ARGV[1])
+end
+
+local head = redis.call("zrange", KEYS[1], 0, 0, "WITHSCORES")
+local nearTerm = -1
+if next(head) ~= nil then
+  local proximal = redis.call("zrevrangebyscore", KEYS[1], head[2] + tonumber(ARGV[2]), 0, "WITHSCORES", "LIMIT", 0, 1)
+  nearTerm = proximal[2]
+end
+
+return {numRaising, nearTerm}`

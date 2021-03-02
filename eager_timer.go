@@ -20,7 +20,7 @@ type EagerTimer struct {
 
 // New create an eager timer with maximun delay and callback function for
 // scheduling.
-func NewEagerTimer(maxDelay time.Duration, fn func()) (*EagerTimer, error) {
+func NewEagerTimer(maxDelay time.Duration, fn func() error) (*EagerTimer, error) {
 	if maxDelay <= 0 {
 		return nil, errors.New("invalid maxDelay")
 	} else if fn == nil {
@@ -28,10 +28,14 @@ func NewEagerTimer(maxDelay time.Duration, fn func()) (*EagerTimer, error) {
 	}
 	et := &EagerTimer{
 		maxDelay: maxDelay,
-		fn:       fn,
-		manual:   make(chan struct{}),
-		stopped:  make(chan struct{}),
-		mu:       &sync.Mutex{},
+		fn: func() {
+			if err := fn(); err != nil {
+				// TODO: retry
+			}
+		},
+		manual:  make(chan struct{}),
+		stopped: make(chan struct{}),
+		mu:      &sync.Mutex{},
 	}
 	et.scheduleLocked(time.Now().Add(et.maxDelay), false)
 	return et, nil

@@ -11,6 +11,9 @@ const (
 	StatusSucceeded Status = "succeeded"
 	StatusRetrying  Status = "retrying"
 	StatusFailed    Status = "failed"
+	StatusWaiting   Status = "waiting"
+	StatusActive    Status = "active"
+	StatusDelayed   Status = "delayed"
 )
 
 type Job struct {
@@ -51,40 +54,79 @@ func (j *Job) Timeout(t int64) *Job {
 	return j
 }
 
+// Save save job and returns job pointer for chainable call.
 func (j *Job) Save() (*Job, error) {
 	data, err := j.ToData()
 	if err != nil {
 		return j, err
 	}
-	res, err := j.queue.config.ScriptsProvider.AddJob().Run(
-		j.queue.redis,
-		[]string{
-			keyId.use(j.queue),
-			keyJobs.use(j.queue),
-			keyWaiting.use(j.queue),
-		},
-		j.Id,
-		data,
-	).Result()
-	if err != nil {
-		return j, err
+	if j.options.Delay == 0 {
+		res, err := j.queue.config.ScriptsProvider.AddJob().Run(
+			j.queue.redis,
+			[]string{
+				keyId.use(j.queue),
+				keyJobs.use(j.queue),
+				keyWaiting.use(j.queue),
+			},
+			j.Id,
+			data,
+		).Result()
+		if err != nil {
+			return j, err
+		}
+		j.Id = res.(string)
+	} else {
+		// delay job
+		res, err := j.queue.config.ScriptsProvider.AddDelayedJob().Run(
+			j.queue.redis,
+			[]string{
+				keyId.use(j.queue),
+				keyJobs.use(j.queue),
+				keyDelayed.use(j.queue),
+				keyEarlierDelayed.use(j.queue),
+			},
+			j.Id,
+			data,
+			j.options.Delay,
+		).Result()
+		if err != nil {
+			return j, err
+		}
+		j.Id = res.(string)
+		// TODO
+		// this.queue._delayedTimer.schedule(this.options.delay);
 	}
-	j.Id = res.(string)
 	return j, nil
 }
 
-func (Job) FromId(q *Queue, jobId string) (*Job, error) {
-	if !q.commandable(false) {
-		return nil, ErrQueueClosed
-	}
+func (Job) fromId(q *Queue, jobId string) (*Job, error) {
 	data, err := q.redis.HGet(keyJobs.use(q), jobId).Result()
 	if err != nil {
 		return nil, err
 	}
-	return Job{}.FromData(q, jobId, data)
+	return Job{}.fromData(q, jobId, data)
 }
 
-func (Job) FromData(queue *Queue, jobId string, data string) (*Job, error) {
+func (Job) fromIds(q *Queue, jobIds []string) ([]Job, error) {
+	datas, err := q.redis.HMGet(keyJobs.use(q), jobIds...).Result()
+	if err != nil {
+		return nil, err
+	}
+	var jobs []Job
+	for i, d := range datas {
+		if d == nil {
+			continue
+		}
+		job, err := Job{}.fromData(q, jobIds[i], d.(string))
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, *job)
+	}
+	return jobs, nil
+}
+
+func (Job) fromData(queue *Queue, jobId string, data string) (*Job, error) {
 	var d Data
 	if err := json.Unmarshal([]byte(data), &d); err != nil {
 		return nil, err
