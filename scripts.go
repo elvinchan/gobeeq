@@ -1,6 +1,6 @@
 package gobeeq
 
-import "github.com/go-redis/redis/v7"
+import "github.com/go-redis/redis/v8"
 
 type (
 	ScriptsProvider interface {
@@ -11,7 +11,9 @@ type (
 		RaiseDelayedJobs() *redis.Script
 	}
 
-	DefaultScriptsProvider struct{}
+	DefaultScriptsProvider struct {
+		// TODO: cache redis.Script
+	}
 )
 
 func (DefaultScriptsProvider) CheckStalledJobs() *redis.Script {

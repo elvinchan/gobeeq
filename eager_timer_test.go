@@ -1,6 +1,7 @@
 package gobeeq
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -12,9 +13,8 @@ func TestEagerTimer(t *testing.T) {
 		t.Parallel()
 
 		flag := false
-		et, err := NewEagerTimer(time.Millisecond, func() error {
+		et, err := NewEagerTimer(time.Millisecond, func(_ context.Context) {
 			flag = true
-			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)
@@ -27,9 +27,8 @@ func TestEagerTimer(t *testing.T) {
 		t.Parallel()
 
 		flag := false
-		et, err := NewEagerTimer(time.Millisecond, func() error {
+		et, err := NewEagerTimer(time.Millisecond, func(_ context.Context) {
 			flag = true
-			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)
@@ -47,9 +46,8 @@ func TestEagerTimer(t *testing.T) {
 
 		now := time.Now()
 		flag := false
-		et, err := NewEagerTimer(time.Second, func() error {
+		et, err := NewEagerTimer(time.Second, func(_ context.Context) {
 			flag = true
-			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)
@@ -69,9 +67,8 @@ func TestEagerTimer(t *testing.T) {
 
 		now := time.Now()
 		flag := false
-		et, err := NewEagerTimer(time.Second, func() error {
+		et, err := NewEagerTimer(time.Second, func(_ context.Context) {
 			flag = true
-			return nil
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)

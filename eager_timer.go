@@ -1,6 +1,7 @@
 package gobeeq
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -10,7 +11,7 @@ import (
 // Refuses to set a later timer, or a timer beyond the given maximum delay.
 type EagerTimer struct {
 	maxDelay time.Duration
-	fn       func()
+	fn       func(ctx context.Context)
 	timer    *time.Timer
 	nextTime time.Time
 	manual   chan struct{}
@@ -20,7 +21,7 @@ type EagerTimer struct {
 
 // New create an eager timer with maximun delay and callback function for
 // scheduling.
-func NewEagerTimer(maxDelay time.Duration, fn func() error) (*EagerTimer, error) {
+func NewEagerTimer(maxDelay time.Duration, fn func(ctx context.Context)) (*EagerTimer, error) {
 	if maxDelay <= 0 {
 		return nil, errors.New("invalid maxDelay")
 	} else if fn == nil {
@@ -28,14 +29,10 @@ func NewEagerTimer(maxDelay time.Duration, fn func() error) (*EagerTimer, error)
 	}
 	et := &EagerTimer{
 		maxDelay: maxDelay,
-		fn: func() {
-			if err := fn(); err != nil {
-				// TODO: retry
-			}
-		},
-		manual:  make(chan struct{}),
-		stopped: make(chan struct{}),
-		mu:      &sync.Mutex{},
+		fn:       fn,
+		manual:   make(chan struct{}),
+		stopped:  make(chan struct{}),
+		mu:       &sync.Mutex{},
 	}
 	et.scheduleLocked(time.Now().Add(et.maxDelay), false)
 	return et, nil
@@ -108,17 +105,19 @@ func (et *EagerTimer) scheduleLocked(t time.Time, immediate bool) {
 }
 
 func (et *EagerTimer) loopExec(immediate bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if immediate {
-		et.fn()
+		et.fn(ctx)
 	}
 	for {
 		select {
 		case <-et.stopped:
 			return
 		case <-et.manual:
-			et.fn()
+			et.fn(ctx)
 		case <-et.timer.C:
-			et.fn()
+			et.fn(ctx)
 		}
 	}
 }

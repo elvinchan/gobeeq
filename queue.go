@@ -12,7 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/elvinchan/util-collects/retry"
+	"github.com/go-redis/redis/v8"
 )
 
 var logger *log.Logger
@@ -40,7 +41,8 @@ type Queue struct {
 	wg              sync.WaitGroup
 }
 
-func NewQueue(name string, r *redis.Client, config *Config) (*Queue, error) {
+func NewQueue(ctx context.Context, name string, r *redis.Client, config *Config,
+) (*Queue, error) {
 	if r == nil {
 		panic(ErrRedisClientRequired)
 	}
@@ -56,7 +58,7 @@ func NewQueue(name string, r *redis.Client, config *Config) (*Queue, error) {
 	if q.config.ActiveDelayedJobs {
 		var err error
 		q.delayedTimer, err = NewEagerTimer(
-			q.config.NearTermWindow, q.ActiveDelayed,
+			q.config.NearTermWindow, q.activeDelayed,
 		)
 		if err != nil {
 			return nil, err
@@ -70,7 +72,7 @@ func NewQueue(name string, r *redis.Client, config *Config) (*Queue, error) {
 		channels = append(channels, keyEarlierDelayed.use(q))
 	}
 	if len(channels) > 0 {
-		pb := q.redis.Subscribe(channels...)
+		pb := q.redis.Subscribe(ctx, channels...)
 		go func() {
 			for {
 				select {
@@ -82,7 +84,7 @@ func NewQueue(name string, r *redis.Client, config *Config) (*Queue, error) {
 			}
 		}()
 	}
-	return q, q.ensureScripts()
+	return q, q.ensureScripts(ctx)
 }
 
 func (q *Queue) handleMessage(m *redis.Message) {
@@ -113,7 +115,7 @@ func (q *Queue) keyPrefix() string {
 	return q.config.Prefix + ":" + q.name + ":"
 }
 
-func (q *Queue) ensureScripts() error {
+func (q *Queue) ensureScripts(ctx context.Context) error {
 	if !q.commandable(false) {
 		return ErrQueueClosed
 	}
@@ -121,12 +123,14 @@ func (q *Queue) ensureScripts() error {
 		q.config.ScriptsProvider.CheckStalledJobs(),
 		q.config.ScriptsProvider.AddJob(),
 		q.config.ScriptsProvider.RemoveJob(),
+		q.config.ScriptsProvider.AddDelayedJob(),
+		q.config.ScriptsProvider.RaiseDelayedJobs(),
 	}
 	var shas []string
 	for _, s := range scripts {
 		shas = append(shas, s.Hash())
 	}
-	evs, err := q.redis.ScriptExists(shas...).Result()
+	evs, err := q.redis.ScriptExists(ctx, shas...).Result()
 	if err != nil {
 		return err
 	} else if len(evs) != len(shas) {
@@ -136,7 +140,7 @@ func (q *Queue) ensureScripts() error {
 		if evs[i] {
 			continue
 		}
-		if _, err := scripts[i].Load(q.redis).Result(); err != nil {
+		if _, err := scripts[i].Load(ctx, q.redis).Result(); err != nil {
 			return err
 		}
 	}
@@ -163,15 +167,16 @@ func (q *Queue) newJobWithId(id string, data string, options *Options) *Job {
 	}
 }
 
-func (q *Queue) GetJob(id string) (*Job, error) {
+func (q *Queue) GetJob(ctx context.Context, id string) (*Job, error) {
 	if !q.commandable(false) {
 		return nil, nil
 	}
-	return Job{}.fromId(q, id)
+	return Job{}.fromId(ctx, q, id)
 }
 
 // GetJobs Get jobs from queue type.
-func (q *Queue) GetJobs(s Status, start, end int64, size int) ([]Job, error) {
+func (q *Queue) GetJobs(ctx context.Context,
+	s Status, start, end int64, size int) ([]Job, error) {
 	if start <= 0 {
 		start = 1
 	}
@@ -188,28 +193,30 @@ func (q *Queue) GetJobs(s Status, start, end int64, size int) ([]Job, error) {
 	)
 	switch s {
 	case StatusFailed, StatusSucceeded:
-		ids, err = q.scanForJobs(k, 0, size, nil)
+		ids, err = q.scanForJobs(ctx, k, 0, size, nil)
 	case StatusWaiting, StatusActive:
-		ids, err = q.redis.LRange(k, start, end).Result()
+		ids, err = q.redis.LRange(ctx, k, start, end).Result()
 	case StatusDelayed:
-		ids, err = q.redis.ZRange(k, start, end).Result()
+		ids, err = q.redis.ZRange(ctx, k, start, end).Result()
 	default:
 		return nil, errors.New("invalid status")
 	}
 	if err != nil {
 		return nil, err
 	}
-	return Job{}.fromIds(q, ids)
+	return Job{}.fromIds(ctx, q, ids)
 }
 
-func (q *Queue) scanForJobs(key string, cursor uint64, size int, ids map[string]struct{}) ([]string, error) {
+func (q *Queue) scanForJobs(ctx context.Context,
+	key string, cursor uint64, size int, ids map[string]struct{},
+) ([]string, error) {
 	if size > q.config.RedisScanCount {
 		size = q.config.RedisScanCount
 	}
 	if ids == nil {
 		ids = make(map[string]struct{})
 	}
-	keys, nextCursor, err := q.redis.SScan(key, cursor, "COUNT", int64(size)).Result()
+	keys, nextCursor, err := q.redis.SScan(ctx, key, cursor, "COUNT", int64(size)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -226,17 +233,24 @@ func (q *Queue) scanForJobs(key string, cursor uint64, size int, ids map[string]
 		}
 		return results, nil
 	}
-	return q.scanForJobs(key, nextCursor, size-len(ids), ids)
+	return q.scanForJobs(ctx, key, nextCursor, size-len(ids), ids)
 }
 
 type ProcessFunc func(context.Context, *Job) error
 
-func (q *Queue) ProcessMulti(concurrency int64, h func(context.Context, *Job) error) error {
+func (q *Queue) ProcessMulti(
+	ctx context.Context,
+	concurrency int64,
+	h func(context.Context, *Job) error,
+) error {
 	q.concurrency = concurrency
-	return q.Process(h)
+	return q.Process(ctx, h)
 }
 
-func (q *Queue) Process(h func(context.Context, *Job) error) error {
+func (q *Queue) Process(
+	ctx context.Context,
+	h func(context.Context, *Job) error,
+) error {
 	if q.handler != nil {
 		return ErrHandlerAlreadyRegistered
 	}
@@ -247,10 +261,10 @@ func (q *Queue) Process(h func(context.Context, *Job) error) error {
 	atomic.StoreInt64(&q.running, 0)
 	atomic.StoreInt64(&q.queued, 1)
 	go func() {
-		if err := q.doStalledJobCheck(); err != nil {
+		if err := q.doStalledJobCheck(ctx); err != nil {
 			logger.Fatal(err)
 		}
-		q.jobTick()
+		q.jobTick(ctx)
 	}()
 	return nil
 }
@@ -260,15 +274,15 @@ func (q *Queue) commandable(strict bool) bool {
 	return status == 0 || (!strict && status == 1)
 }
 
-func (q *Queue) jobTick() {
+func (q *Queue) jobTick(ctx context.Context) {
 	if !q.commandable(true) {
 		atomic.AddInt64(&q.queued, -1)
 		return
 	}
-	j, err := q.getNextJob()
+	j, err := q.getNextJob(ctx)
 	if err != nil {
 		logger.Fatal(err)
-		go q.jobTick()
+		go q.jobTick(ctx)
 		return
 	}
 	if !q.commandable(true) {
@@ -280,22 +294,22 @@ func (q *Queue) jobTick() {
 	atomic.AddInt64(&q.queued, -1)
 	if (q.running + q.queued) < q.concurrency { // TODO: need lock
 		atomic.AddInt64(&q.queued, 1)
-		go q.jobTick()
+		go q.jobTick(ctx)
 	}
 
 	if j == nil {
-		go q.jobTick()
+		go q.jobTick(ctx)
 		return
 	}
-	if err := q.runJob(j); err != nil {
+	if err := q.runJob(ctx, j); err != nil {
 		logger.Fatal(err)
 	}
 	atomic.AddInt64(&q.running, -1)
 	atomic.AddInt64(&q.queued, 1)
-	go q.jobTick()
+	go q.jobTick(ctx)
 }
 
-func (q *Queue) runJob(j *Job) error {
+func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	done := make(chan struct{}, 1)
 	go func() {
 		// preventStalling
@@ -336,16 +350,20 @@ func (q *Queue) runJob(j *Job) error {
 	}
 	// TODO: backoff
 	// finish job
-	return q.finishJob(err, j.data, j)
+	return q.finishJob(ctx, err, j.data, j)
 }
 
 func (q *Queue) preventStall(id string) error {
-	return q.redis.SRem(keyStalling.use(q), id).Err()
+	return q.redis.SRem(context.Background(), keyStalling.use(q), id).Err()
 }
 
 // CheckStalledJobs Check for stalled jobs.
+// The interval on which to check for stalled jobs. This should be set to half
+// the stallInterval setting, to avoid unnecessary work.
 func (q *Queue) CheckStalledJobs(interval time.Duration) {
-	if err := q.doStalledJobCheck(); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := q.doStalledJobCheck(ctx); err != nil {
 		logger.Fatal(err)
 	}
 	if q.checkTimer != nil {
@@ -356,7 +374,7 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 		q.checkTimer.Reset(interval)
 		select {
 		case <-q.checkTimer.C:
-			if err := q.doStalledJobCheck(); err != nil {
+			if err := q.doStalledJobCheck(ctx); err != nil {
 				logger.Fatal(err)
 			}
 		case <-q.stopCh:
@@ -365,8 +383,9 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 	}
 }
 
-func (q *Queue) doStalledJobCheck() error {
-	return q.config.ScriptsProvider.CheckStalledJobs().Run(
+func (q *Queue) doStalledJobCheck(ctx context.Context) error {
+	return q.config.ScriptsProvider.CheckStalledJobs().EvalSha(
+		ctx,
 		q.redis,
 		[]string{
 			keyStallBlock.use(q),
@@ -378,40 +397,42 @@ func (q *Queue) doStalledJobCheck() error {
 	).Err()
 }
 
-func (q *Queue) getNextJob() (*Job, error) {
+func (q *Queue) getNextJob(ctx context.Context) (*Job, error) {
 	if !q.commandable(true) {
 		return nil, ErrQueueClosed
 	}
-	id, err := q.redis.BRPopLPush(keyWaiting.use(q), keyActive.use(q), 0).Result()
+	id, err := q.redis.BRPopLPush(ctx, keyWaiting.use(q), keyActive.use(q), 0).Result()
 	if err != nil {
 		return nil, err
 	}
-	return Job{}.fromId(q, id)
+	return Job{}.fromId(ctx, q, id)
 }
 
-func (q *Queue) finishJob(err error, data interface{}, job *Job) error {
-	pip := q.redis.TxPipeline()
-	pip.LRem(keyActive.use(q), 0, job.Id)
-	pip.SRem(keyStalling.use(q), job.Id)
-	if err != nil {
-		job.status = StatusRetrying
-		// TODO retry
-		data, err := job.ToData()
+func (q *Queue) finishJob(ctx context.Context, err error, data interface{}, job *Job) error {
+	_, err = q.redis.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.LRem(ctx, keyActive.use(q), 0, job.Id)
+		p.SRem(ctx, keyStalling.use(q), job.Id)
 		if err != nil {
-			logger.Fatal(err)
+			job.status = StatusRetrying
+			// TODO retry
+			data, err := job.ToData()
+			if err != nil {
+				logger.Fatal(err)
+			}
+			p.HSet(ctx, keyJobs.use(q), job.Id, data)
+			p.LPush(ctx, keyWaiting.use(q), job.Id)
+		} else {
+			job.status = StatusSucceeded
+			p.HDel(ctx, keyJobs.use(q), string(job.Id))
 		}
-		pip.HSet(keyJobs.use(q), job.Id, data)
-		pip.LPush(keyWaiting.use(q), job.Id)
-	} else {
-		job.status = StatusSucceeded
-		pip.HDel(keyJobs.use(q), string(job.Id))
-	}
-	_, err = pip.Exec()
+		return nil
+	})
 	return err
 }
 
-func (q *Queue) removeJob(id string) error {
-	return q.config.ScriptsProvider.RemoveJob().Run(
+func (q *Queue) removeJob(ctx context.Context, id string) error {
+	return q.config.ScriptsProvider.RemoveJob().EvalSha(
+		ctx,
 		q.redis,
 		[]string{
 			keySucceeded.use(q),
@@ -431,19 +452,21 @@ type QueueStatus struct {
 	NewestJobId int64
 }
 
-func (q *Queue) CheckHealth() (*QueueStatus, error) {
+func (q *Queue) CheckHealth(ctx context.Context) (*QueueStatus, error) {
 	if !q.commandable(false) {
 		return nil, ErrQueueClosed
 	}
 	pip := q.redis.TxPipeline()
-	wv := pip.LLen(keyWaiting.use(q))
-	av := pip.LLen(keyActive.use(q))
-	sv := pip.SCard(keySucceeded.use(q))
-	fv := pip.SCard(keyFailed.use(q))
-	dv := pip.ZCard(keyDelayed.use(q))
-	kv := pip.Get(keyId.use(q))
-	_, err := pip.Exec()
-	if err != nil {
+	wv := pip.LLen(ctx, keyWaiting.use(q))
+	av := pip.LLen(ctx, keyActive.use(q))
+	sv := pip.SCard(ctx, keySucceeded.use(q))
+	fv := pip.SCard(ctx, keyFailed.use(q))
+	dv := pip.ZCard(ctx, keyDelayed.use(q))
+	kv := pip.Get(ctx, keyId.use(q))
+	if _, err := pip.Exec(ctx); err != nil {
+		return nil, err
+	}
+	if err := pip.Close(); err != nil {
 		return nil, err
 	}
 	id, err := strconv.ParseInt(kv.Val(), 10, 64)
@@ -472,7 +495,9 @@ func (q *Queue) CloseTimeout(timeout time.Duration) error {
 		return ErrQueueClosed
 	}
 	close(q.stopCh)
-	q.delayedTimer.Stop()
+	if q.delayedTimer != nil {
+		q.delayedTimer.Stop()
+	}
 	err := q.WaitTimeout(timeout)
 	atomic.StoreUint32(&q.status, 2)
 	return err
@@ -497,11 +522,12 @@ func (q *Queue) IsRunning() bool {
 	return atomic.LoadUint32(&q.status) == 0
 }
 
-func (q *Queue) Destory() error {
+func (q *Queue) Destory(ctx context.Context) error {
 	if !q.commandable(false) {
 		return ErrQueueClosed
 	}
 	return q.redis.Del(
+		ctx,
 		keyId.use(q),
 		keyJobs.use(q),
 		keyStallBlock.use(q),
@@ -518,35 +544,63 @@ func (q *Queue) Destory() error {
 // This pipelines the requests which avoids the waiting 2N*RTT for N jobs -
 // the client waits to receive each command result before sending the next
 // command.
-func (q *Queue) SaveAll(jobs []Job) []error {
-	// TODO
-	return nil
-}
-
-func (q *Queue) ActiveDelayed() error {
-	if !q.config.ActiveDelayedJobs {
-		return nil
+func (q *Queue) SaveAll(ctx context.Context, jobs []Job) error {
+	if !q.commandable(true) {
+		return ErrQueueClosed
 	}
-	rst, err := q.config.ScriptsProvider.RaiseDelayedJobs().Run(
-		q.redis,
-		[]string{
-			keyDelayed.use(q),
-			keyWaiting.use(q),
-		},
-		time.Now().Unix(),
-		q.config.DelayedDebounce.Milliseconds(),
-	).Result()
+	cmders, err := q.redis.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		for i := range jobs {
+			_, err := jobs[i].save(ctx, p)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	rrst := rst.([]interface{})
-	numRaised := rrst[0].(int)
-	nextOpportunity := rrst[1].(int)
+	for i := range jobs {
+		jobs[i].Id, err = cmders[i].(*redis.StringCmd).Result()
+		if err != nil {
+			return err
+		}
+		if jobs[i].options.Delay != 0 && q.config.ActiveDelayedJobs {
+			q.delayedTimer.Schedule(time.Unix(jobs[i].options.Delay, 0))
+		}
+	}
+	return nil
+}
+
+func (q *Queue) activeDelayed(ctx context.Context) {
+	var v interface{}
+	err := retry.Do(ctx, func(ctx context.Context, attempt uint) error {
+		var err error
+		v, err = q.config.ScriptsProvider.RaiseDelayedJobs().EvalSha(
+			ctx,
+			q.redis,
+			[]string{
+				keyDelayed.use(q),
+				keyWaiting.use(q),
+			},
+			time.Now().Unix(),
+			q.config.DelayedDebounce.Milliseconds(),
+		).Result()
+		return err
+	})
+	if err != nil {
+		logger.Fatal(err)
+	}
+	vs := v.([]interface{})
+	if vs == nil {
+		logger.Fatal("invalid result of raiseDelayedJobs")
+	}
+	numRaised := vs[0].(int)
+	nextOpportunity := vs[1].(int)
 	if numRaised > 0 {
 		if fn, ok := q.events["raised jobs"]; ok {
 			fn(numRaised)
 		}
 	}
 	q.delayedTimer.Schedule(time.Unix(int64(nextOpportunity), 0))
-	return nil
 }

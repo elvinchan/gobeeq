@@ -1,7 +1,11 @@
 package gobeeq
 
 import (
+	"context"
 	"encoding/json"
+	"time"
+
+	"github.com/go-redis/redis/v8"
 )
 
 type Status string
@@ -27,7 +31,7 @@ type Job struct {
 type Options struct {
 	Timestamp int64 `json:"timestamp"`
 	Timeout   int64 `json:"timeout"` // ms
-	Delay     int   `json:"delay"`
+	Delay     int64 `json:"delay"`
 	Retries   int   `json:"retries"`
 	// Stacktraces []interface{} `json:"stacktraces"`
 	// Backoff struct {
@@ -54,31 +58,16 @@ func (j *Job) Timeout(t int64) *Job {
 	return j
 }
 
-// Save save job and returns job pointer for chainable call.
-func (j *Job) Save() (*Job, error) {
+func (j *Job) save(ctx context.Context, cmd redis.Cmdable) (*redis.Cmd, error) {
 	data, err := j.ToData()
 	if err != nil {
-		return j, err
+		return nil, err
 	}
-	if j.options.Delay == 0 {
-		res, err := j.queue.config.ScriptsProvider.AddJob().Run(
-			j.queue.redis,
-			[]string{
-				keyId.use(j.queue),
-				keyJobs.use(j.queue),
-				keyWaiting.use(j.queue),
-			},
-			j.Id,
-			data,
-		).Result()
-		if err != nil {
-			return j, err
-		}
-		j.Id = res.(string)
-	} else {
+	if j.options.Delay != 0 {
 		// delay job
-		res, err := j.queue.config.ScriptsProvider.AddDelayedJob().Run(
-			j.queue.redis,
+		script := j.queue.config.ScriptsProvider.AddDelayedJob()
+		return cmd.EvalSha(ctx,
+			script.Hash(),
 			[]string{
 				keyId.use(j.queue),
 				keyJobs.use(j.queue),
@@ -88,27 +77,44 @@ func (j *Job) Save() (*Job, error) {
 			j.Id,
 			data,
 			j.options.Delay,
-		).Result()
-		if err != nil {
-			return j, err
-		}
-		j.Id = res.(string)
-		// TODO
-		// this.queue._delayedTimer.schedule(this.options.delay);
+		), nil
+	}
+	script := j.queue.config.ScriptsProvider.AddJob()
+	return cmd.EvalSha(ctx,
+		script.Hash(),
+		[]string{
+			keyId.use(j.queue),
+			keyJobs.use(j.queue),
+			keyWaiting.use(j.queue),
+		},
+		j.Id,
+		data,
+	), nil
+}
+
+// Save save job and returns job pointer for chainable call.
+func (j *Job) Save(ctx context.Context) (*Job, error) {
+	cmder, err := j.save(ctx, j.queue.redis)
+	if err != nil {
+		return nil, err
+	}
+	j.Id = cmder.String()
+	if j.options.Delay != 0 && j.queue.config.ActiveDelayedJobs {
+		j.queue.delayedTimer.Schedule(time.Unix(j.options.Delay, 0))
 	}
 	return j, nil
 }
 
-func (Job) fromId(q *Queue, jobId string) (*Job, error) {
-	data, err := q.redis.HGet(keyJobs.use(q), jobId).Result()
+func (Job) fromId(ctx context.Context, q *Queue, jobId string) (*Job, error) {
+	data, err := q.redis.HGet(ctx, keyJobs.use(q), jobId).Result()
 	if err != nil {
 		return nil, err
 	}
 	return Job{}.fromData(q, jobId, data)
 }
 
-func (Job) fromIds(q *Queue, jobIds []string) ([]Job, error) {
-	datas, err := q.redis.HMGet(keyJobs.use(q), jobIds...).Result()
+func (Job) fromIds(ctx context.Context, q *Queue, jobIds []string) ([]Job, error) {
+	datas, err := q.redis.HMGet(ctx, keyJobs.use(q), jobIds...).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +151,6 @@ func (j *Job) ToData() (string, error) {
 	return string(b), err
 }
 
-func (j *Job) Remove() error {
-	return j.queue.removeJob(j.Id)
+func (j *Job) Remove(ctx context.Context) error {
+	return j.queue.removeJob(ctx, j.Id)
 }
