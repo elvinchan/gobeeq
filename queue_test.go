@@ -41,7 +41,7 @@ func TestQueueProcess(t *testing.T) {
 			assert.Equal(t, name, queue.name)
 
 			ch := make(chan time.Time)
-			err = queue.Process(ctx, func(ctx context.Context, j *Job) error {
+			err = queue.Process(func(ctx context.Context, j *Job) error {
 				t.Log("processing job:", j)
 				assert.JSONEq(t, fmt.Sprintf(`{"foo": "bar-%d"}`, i), j.data)
 				time.Sleep(time.Duration(cases[i]) * time.Second)
@@ -56,7 +56,7 @@ func TestQueueProcess(t *testing.T) {
 				Foo: fmt.Sprintf("bar-%d", i),
 			}
 			db, _ := json.Marshal(data)
-			_, err = queue.NewJob(string(db)).Save(ctx)
+			_, err = queue.NewJob(string(db), nil).Save(ctx)
 			assert.NoError(t, err)
 
 			select {
@@ -86,7 +86,7 @@ func TestQueueClose(t *testing.T) {
 		queue, err := NewQueue(ctx, fmt.Sprintf("test-queue-close-%d", i), client, nil)
 		assert.NoError(t, err)
 
-		err = queue.Process(ctx, func(ctx context.Context, j *Job) error {
+		err = queue.Process(func(ctx context.Context, j *Job) error {
 			t.Log("processing job:", j)
 			time.Sleep(5 * time.Second)
 			return nil
@@ -97,7 +97,7 @@ func TestQueueClose(t *testing.T) {
 
 	t.Run("Wait for finish", func(t *testing.T) {
 		queue := newQueue()
-		j, err := queue.NewJob("data").Save(ctx)
+		j, err := queue.NewJob("data", nil).Save(ctx)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
@@ -108,7 +108,7 @@ func TestQueueClose(t *testing.T) {
 
 	t.Run("Not processed", func(t *testing.T) {
 		queue := newQueue()
-		j, err := queue.NewJob("data").Save(ctx)
+		j, err := queue.NewJob("data", nil).Save(ctx)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
@@ -123,7 +123,7 @@ func TestQueueDestroy(t *testing.T) {
 	queue, err := NewQueue(ctx, "test-queue-destroy", client, nil)
 	assert.NoError(t, err)
 
-	j, err := queue.NewJob("data").Save(ctx)
+	j, err := queue.NewJob("data", nil).Save(ctx)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, j.Id)
 

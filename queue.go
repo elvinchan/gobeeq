@@ -39,6 +39,7 @@ type Queue struct {
 	stopCh          chan struct{}
 	events          map[string]func(args ...interface{})
 	wg              sync.WaitGroup
+	mu              *sync.Mutex
 }
 
 func NewQueue(ctx context.Context, name string, r *redis.Client, config *Config,
@@ -54,11 +55,12 @@ func NewQueue(ctx context.Context, name string, r *redis.Client, config *Config,
 		config: config,
 		name:   name,
 		stopCh: make(chan struct{}),
+		mu:     &sync.Mutex{},
 	}
 	if q.config.ActiveDelayedJobs {
 		var err error
 		q.delayedTimer, err = NewEagerTimer(
-			q.config.NearTermWindow, q.activeDelayed,
+			q.config.NearTermWindow, q.activateDelayed,
 		)
 		if err != nil {
 			return nil, err
@@ -147,13 +149,13 @@ func (q *Queue) ensureScripts(ctx context.Context) error {
 	return nil
 }
 
-func (q *Queue) NewJob(data string) *Job {
-	return q.newJobWithId("", data, nil)
+func (q *Queue) NewJob(data string, options *Options) *Job {
+	return q.newJobWithId("", data, options)
 }
 
 func (q *Queue) newJobWithId(id string, data string, options *Options) *Job {
 	if options == nil {
-		options = &Options{}
+		options = defaultOptions()
 	}
 	if options.Timestamp == 0 {
 		options.Timestamp = time.Now().UnixNano() / int64(time.Millisecond) // ms
@@ -227,7 +229,7 @@ func (q *Queue) scanForJobs(ctx context.Context,
 		ids[keys[i]] = struct{}{}
 	}
 	if nextCursor == 0 || len(ids) >= int(size) {
-		results := make([]string, len(ids))
+		results := make([]string, 0, len(ids))
 		for id := range ids {
 			results = append(results, id)
 		}
@@ -239,32 +241,42 @@ func (q *Queue) scanForJobs(ctx context.Context,
 type ProcessFunc func(context.Context, *Job) error
 
 func (q *Queue) ProcessMulti(
-	ctx context.Context,
 	concurrency int64,
 	h func(context.Context, *Job) error,
 ) error {
 	q.concurrency = concurrency
-	return q.Process(ctx, h)
+	return q.Process(h)
 }
 
-func (q *Queue) Process(
-	ctx context.Context,
-	h func(context.Context, *Job) error,
-) error {
-	if q.handler != nil {
-		return ErrHandlerAlreadyRegistered
-	}
+func (q *Queue) Process(h func(context.Context, *Job) error) error {
 	if !q.commandable(true) {
 		return ErrQueueClosed
 	}
+	q.mu.Lock()
+	if q.handler != nil {
+		q.mu.Unlock()
+		return ErrHandlerAlreadyRegistered
+	}
 	q.handler = ProcessFunc(h)
+	q.mu.Unlock()
 	atomic.StoreInt64(&q.running, 0)
 	atomic.StoreInt64(&q.queued, 1)
 	go func() {
-		if err := q.doStalledJobCheck(ctx); err != nil {
-			logger.Fatal(err)
-		}
-		q.jobTick(ctx)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			if err := q.doStalledJobCheck(ctx); err != nil {
+				logger.Fatal(err)
+			}
+			for {
+				if !q.jobTick(ctx) {
+					break
+				}
+			}
+		}()
+		go q.activateDelayed(ctx)
+
+		<-q.stopCh
+		cancel()
 	}()
 	return nil
 }
@@ -274,39 +286,43 @@ func (q *Queue) commandable(strict bool) bool {
 	return status == 0 || (!strict && status == 1)
 }
 
-func (q *Queue) jobTick(ctx context.Context) {
+func (q *Queue) jobTick(ctx context.Context) bool {
 	if !q.commandable(true) {
 		atomic.AddInt64(&q.queued, -1)
-		return
+		return false
 	}
 	j, err := q.getNextJob(ctx)
 	if err != nil {
 		logger.Fatal(err)
-		go q.jobTick(ctx)
-		return
+		return true
 	}
 	if !q.commandable(true) {
 		// This job will get picked up later as a stalled job if we happen to get here.
 		atomic.AddInt64(&q.queued, -1)
-		return
+		return false
 	}
 	atomic.AddInt64(&q.running, 1)
 	atomic.AddInt64(&q.queued, -1)
+	nextTick := false
 	if (q.running + q.queued) < q.concurrency { // TODO: need lock
 		atomic.AddInt64(&q.queued, 1)
-		go q.jobTick(ctx)
+		nextTick = true
 	}
 
 	if j == nil {
-		go q.jobTick(ctx)
-		return
+		// Per comment in Queue#_waitForJob, this branch is possible when
+		// the job is removed before processing can take place, but after
+		// being initially acquired.
+		return nextTick
 	}
-	if err := q.runJob(ctx, j); err != nil {
-		logger.Fatal(err)
-	}
-	atomic.AddInt64(&q.running, -1)
-	atomic.AddInt64(&q.queued, 1)
-	go q.jobTick(ctx)
+	go func() {
+		if err := q.runJob(ctx, j); err != nil {
+			logger.Fatal(err)
+		}
+		atomic.AddInt64(&q.running, -1)
+		atomic.AddInt64(&q.queued, 1)
+	}()
+	return true
 }
 
 func (q *Queue) runJob(ctx context.Context, j *Job) error {
@@ -336,11 +352,11 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 
 	var err error
 	if j.options.Timeout == 0 {
-		err = q.handler(context.Background(), j)
+		err = q.handler(ctx, j)
 	} else {
 		errc := make(chan error, 1)
 		go func() {
-			errc <- q.handler(context.Background(), j)
+			errc <- q.handler(ctx, j)
 		}()
 		select {
 		case err = <-errc:
@@ -413,17 +429,52 @@ func (q *Queue) finishJob(ctx context.Context, err error, data interface{}, job 
 		p.LRem(ctx, keyActive.use(q), 0, job.Id)
 		p.SRem(ctx, keyStalling.use(q), job.Id)
 		if err != nil {
-			job.status = StatusRetrying
-			// TODO retry
-			data, err := job.ToData()
-			if err != nil {
-				logger.Fatal(err)
+			delay := int64(-1) // no retry
+			if job.options.Retries > 0 {
+				delay = job.options.Backoff.Delay()
 			}
-			p.HSet(ctx, keyJobs.use(q), job.Id, data)
-			p.LPush(ctx, keyWaiting.use(q), job.Id)
+			if delay < 0 {
+				job.status = StatusFailed
+				if q.config.RemoveOnFailure {
+					p.HDel(ctx, keyJobs.use(q), job.Id)
+				} else {
+					data, err := job.ToData()
+					if err != nil {
+						logger.Fatal(err)
+					}
+					p.HSet(ctx, keyJobs.use(q), job.Id, data)
+					p.SAdd(ctx, keyFailed.use(q), job.Id)
+				}
+			} else {
+				job.status = StatusRetrying
+				data, err := job.ToData()
+				if err != nil {
+					logger.Fatal(err)
+				}
+				p.HSet(ctx, keyJobs.use(q), job.Id, data)
+				if delay == 0 {
+					p.LPush(ctx, keyWaiting.use(q), job.Id)
+				} else {
+					t := time.Now().Add(time.Millisecond * time.Duration(delay)).Unix()
+					p.ZAdd(ctx, keyDelayed.use(q), &redis.Z{
+						Score:  float64(t),
+						Member: job.Id,
+					})
+					p.Publish(ctx, keyEarlierDelayed.use(q), t)
+				}
+			}
 		} else {
 			job.status = StatusSucceeded
-			p.HDel(ctx, keyJobs.use(q), string(job.Id))
+			if q.config.RemoveOnSuccess {
+				p.HDel(ctx, keyJobs.use(q), job.Id)
+			} else {
+				data, err := job.ToData()
+				if err != nil {
+					logger.Fatal(err)
+				}
+				p.HSet(ctx, keyJobs.use(q), job.Id, data)
+				p.SAdd(ctx, keySucceeded.use(q), job.Id)
+			}
 		}
 		return nil
 	})
@@ -572,7 +623,8 @@ func (q *Queue) SaveAll(ctx context.Context, jobs []Job) error {
 	return nil
 }
 
-func (q *Queue) activeDelayed(ctx context.Context) {
+// TODO: need prevent running concurrently?
+func (q *Queue) activateDelayed(ctx context.Context) {
 	var v interface{}
 	err := retry.Do(ctx, func(ctx context.Context, attempt uint) error {
 		var err error

@@ -15,8 +15,15 @@ type Config struct {
 	Concurrency       uint
 	GetEvents         bool
 	ActiveDelayedJobs bool
-	SendEvents        bool
-	RedisScanCount    int
+	// Enable to have this worker automatically remove its successfully
+	// completed jobs from Redis, so as to keep memory usage down.
+	RemoveOnSuccess bool
+	// Enable to have this worker automatically remove its failed jobs from
+	// Redis, so as to keep memory usage down. This will not remove jobs that
+	// are set to retry unless they fail all their retries.
+	RemoveOnFailure bool
+	SendEvents      bool
+	RedisScanCount  int
 	ScriptsProvider
 }
 

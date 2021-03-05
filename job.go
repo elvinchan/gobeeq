@@ -34,10 +34,13 @@ type Options struct {
 	Delay     int64 `json:"delay"`
 	Retries   int   `json:"retries"`
 	// Stacktraces []interface{} `json:"stacktraces"`
-	// Backoff struct {
-	// 	Strategy string `json:"strategy"`
-	// 	Delay    int    `json:"delay"`
-	// } `json:"backoff"`
+	Backoff BackoffStrategy
+}
+
+func defaultOptions() *Options {
+	return &Options{
+		Backoff: BackoffImmediate{},
+	}
 }
 
 type Data struct {
