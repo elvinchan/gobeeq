@@ -3,6 +3,7 @@ package gobeeq
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -61,6 +62,20 @@ func (j *Job) Timeout(t int64) *Job {
 	return j
 }
 
+func runScript(
+	ctx context.Context,
+	sha1 string,
+	cmd redis.Cmdable,
+	keys []string,
+	args ...interface{},
+) *redis.Cmd {
+	r := cmd.EvalSha(ctx, sha1, keys, args...)
+	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
+		return cmd.Eval(ctx, sha1, keys, args...)
+	}
+	return r
+}
+
 func (j *Job) save(ctx context.Context, cmd redis.Cmdable) (*redis.Cmd, error) {
 	data, err := j.ToData()
 	if err != nil {
@@ -68,9 +83,10 @@ func (j *Job) save(ctx context.Context, cmd redis.Cmdable) (*redis.Cmd, error) {
 	}
 	if j.options.Delay != 0 {
 		// delay job
-		script := j.queue.config.ScriptsProvider.AddDelayedJob()
-		return cmd.EvalSha(ctx,
-			script.Hash(),
+		return runScript(
+			ctx,
+			j.queue.config.ScriptsProvider.AddDelayedJob().Hash(),
+			cmd,
 			[]string{
 				keyId.use(j.queue),
 				keyJobs.use(j.queue),
@@ -82,9 +98,10 @@ func (j *Job) save(ctx context.Context, cmd redis.Cmdable) (*redis.Cmd, error) {
 			j.options.Delay,
 		), nil
 	}
-	script := j.queue.config.ScriptsProvider.AddJob()
-	return cmd.EvalSha(ctx,
-		script.Hash(),
+	return runScript(
+		ctx,
+		j.queue.config.ScriptsProvider.AddJob().Hash(),
+		cmd,
 		[]string{
 			keyId.use(j.queue),
 			keyJobs.use(j.queue),

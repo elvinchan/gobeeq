@@ -57,8 +57,8 @@ func NewQueue(ctx context.Context, name string, r *redis.Client, config *Config,
 		stopCh: make(chan struct{}),
 		mu:     &sync.Mutex{},
 	}
+	var err error
 	if q.config.ActiveDelayedJobs {
-		var err error
 		q.delayedTimer, err = NewEagerTimer(
 			q.config.NearTermWindow, q.activateDelayed,
 		)
@@ -330,15 +330,21 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	go func() {
 		// preventStalling
 		interval := q.config.StallInterval / 2
-		timer := time.NewTimer(interval)
+		t := time.NewTimer(interval)
 		for {
-			timer.Reset(interval)
+			t.Reset(interval)
 			select {
-			case <-timer.C:
+			case <-t.C:
 				if err := q.preventStall(j.Id); err != nil {
 					logger.Fatal(err)
 				}
 			case <-done:
+				if !t.Stop() {
+					select {
+					case <-t.C:
+					default:
+					}
+				}
 				return
 			}
 		}
@@ -400,7 +406,7 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 }
 
 func (q *Queue) doStalledJobCheck(ctx context.Context) error {
-	return q.config.ScriptsProvider.CheckStalledJobs().EvalSha(
+	return q.config.ScriptsProvider.CheckStalledJobs().Run(
 		ctx,
 		q.redis,
 		[]string{
@@ -482,7 +488,7 @@ func (q *Queue) finishJob(ctx context.Context, err error, data interface{}, job 
 }
 
 func (q *Queue) removeJob(ctx context.Context, id string) error {
-	return q.config.ScriptsProvider.RemoveJob().EvalSha(
+	return q.config.ScriptsProvider.RemoveJob().Run(
 		ctx,
 		q.redis,
 		[]string{
@@ -628,7 +634,7 @@ func (q *Queue) activateDelayed(ctx context.Context) {
 	var v interface{}
 	err := retry.Do(ctx, func(ctx context.Context, attempt uint) error {
 		var err error
-		v, err = q.config.ScriptsProvider.RaiseDelayedJobs().EvalSha(
+		v, err = q.config.ScriptsProvider.RaiseDelayedJobs().Run(
 			ctx,
 			q.redis,
 			[]string{

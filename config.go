@@ -3,14 +3,19 @@ package gobeeq
 import "time"
 
 type Config struct {
+	// Duration of the window in which workers must report that they aren't
+	// stalling. Higher values will reduce Redis/network overhead, but if a
+	// worker stalls, it will take longer before its stalled job(s) will be
+	// retried. A higher value will also result in a lower probability of
+	// false-positives during stall detection.
 	StallInterval time.Duration
-	// Avoid scheduling timers for further out than this period of time. The
-	// workers will all poll on this interval, at minimum, to find new delayed
-	// jobs.
+	// The window during which delayed jobs will be specifically scheduled.
+	// If all delayed jobs are further out that this window, the Queue will
+	// double-check that it hasn't missed any jobs after the window elapses.
 	NearTermWindow time.Duration
-	// Avoids rapid churn during processing of nearly-concurrent events.
+	// To avoid unnecessary churn for several jobs in short succession, the
+	// Queue may delay individual jobs by up to this amount.
 	DelayedDebounce   time.Duration
-	EnsureScripts     bool
 	Prefix            string
 	Concurrency       uint
 	GetEvents         bool
@@ -33,7 +38,6 @@ var (
 		NearTermWindow:  time.Second * 60 * 20,
 		DelayedDebounce: time.Second,
 		GetEvents:       true,
-		EnsureScripts:   true,
 		SendEvents:      true,
 		Prefix:          "bq",
 		Concurrency:     1,
