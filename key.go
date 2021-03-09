@@ -29,6 +29,7 @@ func (k key) use(p prefix) string {
 var (
 	ErrRedisClientRequired      = errors.New("bq: Redis client is required")
 	ErrInvalidResult            = errors.New("bq: invalid Redis result")
+	ErrInvalidJobStatus         = errors.New("bq: invalid job status")
 	ErrQueueClosed              = errors.New("bq: queue is already closed")
 	ErrHandlerAlreadyRegistered = errors.New("bq: handler already registered")
 	ErrTimeout                  = errors.New("bq: timeout")

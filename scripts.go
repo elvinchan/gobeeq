@@ -12,28 +12,40 @@ type (
 	}
 
 	DefaultScriptsProvider struct {
-		// TODO: cache redis.Script
+		checkStalledJobs *redis.Script
+		addJob           *redis.Script
+		removeJob        *redis.Script
+		addDelayedJob    *redis.Script
+		raiseDelayedJobs *redis.Script
 	}
 )
 
-func (DefaultScriptsProvider) CheckStalledJobs() *redis.Script {
-	return redis.NewScript(scriptCheckStalledJobs)
+var defaultScriptsProvider = DefaultScriptsProvider{
+	checkStalledJobs: redis.NewScript(scriptCheckStalledJobs),
+	addJob:           redis.NewScript(scriptAddJob),
+	removeJob:        redis.NewScript(scriptRemoveJob),
+	addDelayedJob:    redis.NewScript(scriptAddDelayedJob),
+	raiseDelayedJobs: redis.NewScript(scriptRaiseDelayedJobs),
 }
 
-func (DefaultScriptsProvider) AddJob() *redis.Script {
-	return redis.NewScript(scriptAddJob)
+func (p DefaultScriptsProvider) CheckStalledJobs() *redis.Script {
+	return p.checkStalledJobs
 }
 
-func (DefaultScriptsProvider) RemoveJob() *redis.Script {
-	return redis.NewScript(scriptRemoveJob)
+func (p DefaultScriptsProvider) AddJob() *redis.Script {
+	return p.addJob
 }
 
-func (DefaultScriptsProvider) AddDelayedJob() *redis.Script {
-	return redis.NewScript(scriptAddDelayedJob)
+func (p DefaultScriptsProvider) RemoveJob() *redis.Script {
+	return p.removeJob
 }
 
-func (DefaultScriptsProvider) RaiseDelayedJobs() *redis.Script {
-	return redis.NewScript(scriptRaiseDelayedJobs)
+func (p DefaultScriptsProvider) AddDelayedJob() *redis.Script {
+	return p.addDelayedJob
+}
+
+func (p DefaultScriptsProvider) RaiseDelayedJobs() *redis.Script {
+	return p.raiseDelayedJobs
 }
 
 /*

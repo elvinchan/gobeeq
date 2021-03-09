@@ -1,29 +1,28 @@
 package gobeeq
 
-type (
-	BackoffStrategy interface {
-		Delay() int64
-	}
+type BackoffStrategy string
 
-	BackoffImmediate struct{}
-	BackoffFixed     struct {
-		Fixed int64
-	}
-	BackoffExponential struct {
-		Next int64
-	}
+const (
+	BackoffImmediate   BackoffStrategy = "immediate"
+	BackoffFixed       BackoffStrategy = "fixed"
+	BackoffExponential BackoffStrategy = "exponential"
 )
 
-func (BackoffImmediate) Delay() int64 {
+type Backoff struct {
+	Strategy BackoffStrategy `json:"strategy"`
+	Delay    int64           `json:"delay"`
+}
+
+func (b *Backoff) cal() int64 {
+	switch b.Strategy {
+	case BackoffImmediate:
+		return 0
+	case BackoffFixed:
+		return b.Delay
+	case BackoffExponential:
+		v := b.Delay
+		b.Delay *= 2
+		return v
+	}
 	return 0
-}
-
-func (b BackoffFixed) Delay() int64 {
-	return b.Fixed
-}
-
-func (b BackoffExponential) Delay() int64 {
-	v := b.Next
-	b.Next *= 2
-	return v
 }
