@@ -45,9 +45,10 @@ func WithDelayedDebounce(d time.Duration) QueueOption {
 // `delayUntil` timestamp. Note that this must be enabled on at least one
 // `Queue` instance for the delayed retry strategies (`fixed` and `exponential`)
 // - this will reactivate them after their computed delay.
-func WithActivateDelayedJobs(b bool) QueueOption {
+func WithActivateDelayedJobs(b bool, onRaised func(numRaised int)) QueueOption {
 	return func(q *Queue) {
 		q.settings.ActivateDelayedJobs = b
+		q.onRaised = onRaised
 	}
 }
 
@@ -80,5 +81,33 @@ func WithRedisScanCount(i int) QueueOption {
 func WithScriptsProvider(i ScriptsProvider) QueueOption {
 	return func(q *Queue) {
 		q.provider = i
+	}
+}
+
+// WithOnJobSucceeded set a receiver for job succeeded event message from Redis.
+func WithOnJobSucceeded(fn func(jobId, result string)) QueueOption {
+	return func(q *Queue) {
+		q.onSucceeded = fn
+	}
+}
+
+// WithOnJobRetrying set a receiver for job retrying event message from Redis.
+func WithOnJobRetrying(fn func(jobId string, err error)) QueueOption {
+	return func(q *Queue) {
+		q.onRetrying = fn
+	}
+}
+
+// WithOnJobFailed set a receiver for job failed event message from Redis.
+func WithOnJobFailed(fn func(jobId string, err error)) QueueOption {
+	return func(q *Queue) {
+		q.onFailed = fn
+	}
+}
+
+// WithOnJobProgress set a receiver for job progress event message from Redis.
+func WithOnJobProgress(fn func(jobId, progress string)) QueueOption {
+	return func(q *Queue) {
+		q.onProgress = fn
 	}
 }

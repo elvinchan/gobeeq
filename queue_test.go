@@ -23,7 +23,7 @@ func middle(h ProcessFunc) ProcessFunc {
 func TestQueue(t *testing.T) {
 	name := "test-queue-basic"
 	ctx := context.Background()
-	queue, err := NewQueue(ctx, name, client, nil)
+	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
 	assert.Equal(t, name, queue.name)
 }
@@ -31,21 +31,22 @@ func TestQueue(t *testing.T) {
 func TestQueueProcess(t *testing.T) {
 	ctx := context.Background()
 	cases := []int{1, 3, 5}
+	chs := make(map[string]chan time.Time)
 	for i := range cases {
 		t.Run(fmt.Sprintf("Process delay: %d", i), func(t *testing.T) {
 			t.Parallel()
 
 			name := fmt.Sprintf("test-queue-process-%d", i)
-			queue, err := NewQueue(ctx, name, client, nil)
+			queue, err := NewQueue(ctx, name, client)
 			assert.NoError(t, err)
 			assert.Equal(t, name, queue.name)
 
-			ch := make(chan time.Time)
-			err = queue.Process(func(ctx context.Context, j *Job) error {
-				t.Log("processing job:", j)
-				assert.JSONEq(t, fmt.Sprintf(`{"foo": "bar-%d"}`, i), j.data)
+			chs[name] = make(chan time.Time)
+			err = queue.Process(func(ctx Context) error {
+				t.Log("processing job:", ctx.GetId())
+				assert.JSONEq(t, fmt.Sprintf(`{"foo": "bar-%d"}`, i), ctx.GetData())
 				time.Sleep(time.Duration(cases[i]) * time.Second)
-				ch <- time.Now()
+				chs[name] <- time.Now()
 				return nil
 			})
 			assert.NoError(t, err)
@@ -56,11 +57,11 @@ func TestQueueProcess(t *testing.T) {
 				Foo: fmt.Sprintf("bar-%d", i),
 			}
 			db, _ := json.Marshal(data)
-			_, err = queue.NewJob(string(db), nil).Save(ctx)
+			_, err = queue.NewJob(string(db)).Save(ctx)
 			assert.NoError(t, err)
 
 			select {
-			case <-ch:
+			case <-chs[name]:
 			case <-time.After(testTimeout):
 				t.Fatalf("job was not processed")
 			}
@@ -70,7 +71,7 @@ func TestQueueProcess(t *testing.T) {
 
 func TestQueueRunning(t *testing.T) {
 	ctx := context.Background()
-	queue, err := NewQueue(ctx, "test-queue-running", client, nil)
+	queue, err := NewQueue(ctx, "test-queue-running", client)
 	assert.NoError(t, err)
 
 	assert.Equal(t, true, queue.IsRunning())
@@ -83,11 +84,11 @@ func TestQueueClose(t *testing.T) {
 	var i int
 	newQueue := func() *Queue {
 		i++
-		queue, err := NewQueue(ctx, fmt.Sprintf("test-queue-close-%d", i), client, nil)
+		queue, err := NewQueue(ctx, fmt.Sprintf("test-queue-close-%d", i), client)
 		assert.NoError(t, err)
 
-		err = queue.Process(func(ctx context.Context, j *Job) error {
-			t.Log("processing job:", j)
+		err = queue.Process(func(ctx Context) error {
+			t.Log("processing job:", ctx.GetId())
 			time.Sleep(5 * time.Second)
 			return nil
 		})
@@ -97,7 +98,7 @@ func TestQueueClose(t *testing.T) {
 
 	t.Run("Wait for finish", func(t *testing.T) {
 		queue := newQueue()
-		j, err := queue.NewJob("data", nil).Save(ctx)
+		j, err := queue.NewJob("data").Save(ctx)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
@@ -108,22 +109,22 @@ func TestQueueClose(t *testing.T) {
 
 	t.Run("Not processed", func(t *testing.T) {
 		queue := newQueue()
-		j, err := queue.NewJob("data", nil).Save(ctx)
+		j, err := queue.NewJob("data").Save(ctx)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
 		time.Sleep(time.Second)
 		err = queue.CloseTimeout(2 * time.Second)
-		assert.EqualError(t, err, "bq: jobs are not processed after 2s")
+		assert.EqualError(t, err, "gobeeq: jobs are not processed after 2s")
 	})
 }
 
 func TestQueueDestroy(t *testing.T) {
 	ctx := context.Background()
-	queue, err := NewQueue(ctx, "test-queue-destroy", client, nil)
+	queue, err := NewQueue(ctx, "test-queue-destroy", client)
 	assert.NoError(t, err)
 
-	j, err := queue.NewJob("data", nil).Save(ctx)
+	j, err := queue.NewJob("data").Save(ctx)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, j.Id)
 

@@ -3,7 +3,6 @@ package gobeeq
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -116,8 +115,8 @@ func (j *Job) Timeout(t int64) *Job {
 
 // Save save job and returns job pointer for chainable call.
 func (j *Job) Save(ctx context.Context) (*Job, error) {
-	cmder, err := j.save(ctx, j.queue.redis)
-	if err != nil {
+	cmder := j.save(ctx, j.queue.redis)
+	if err := cmder.Err(); err != nil {
 		return nil, err
 	}
 	j.Id = cmder.String()
@@ -127,11 +126,8 @@ func (j *Job) Save(ctx context.Context) (*Job, error) {
 	return j, nil
 }
 
-func (j *Job) save(ctx context.Context, cmd redis.Cmdable) (*redis.Cmd, error) {
-	data, err := j.ToData()
-	if err != nil {
-		return nil, err
-	}
+func (j *Job) save(ctx context.Context, cmd redis.Cmdable) *redis.Cmd {
+	data := j.toData()
 	if j.options.Delay != 0 {
 		// delay job
 		return runScript(
@@ -147,7 +143,7 @@ func (j *Job) save(ctx context.Context, cmd redis.Cmdable) (*redis.Cmd, error) {
 			j.Id,
 			data,
 			j.options.Delay,
-		), nil
+		)
 	}
 	return runScript(
 		ctx,
@@ -160,21 +156,7 @@ func (j *Job) save(ctx context.Context, cmd redis.Cmdable) (*redis.Cmd, error) {
 		},
 		j.Id,
 		data,
-	), nil
-}
-
-func runScript(
-	ctx context.Context,
-	sha1 string,
-	cmd redis.Cmdable,
-	keys []string,
-	args ...interface{},
-) *redis.Cmd {
-	r := cmd.EvalSha(ctx, sha1, keys, args...)
-	if err := r.Err(); err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
-		return cmd.Eval(ctx, sha1, keys, args...)
-	}
-	return r
+	)
 }
 
 // Remove removes a job from the queue.
@@ -222,11 +204,11 @@ func (Job) fromData(queue *Queue, jobId string, data string) (*Job, error) {
 	return j, nil
 }
 
-func (j *Job) ToData() (string, error) {
-	b, err := json.Marshal(Data{
+func (j *Job) toData() string {
+	b, _ := json.Marshal(Data{
 		Data:    j.data,
 		Options: j.options,
 		Status:  j.status,
 	})
-	return string(b), err
+	return string(b)
 }

@@ -42,7 +42,7 @@ func NewEagerTimer(maxDelay time.Duration, fn func(ctx context.Context)) (*Eager
 func (et *EagerTimer) Stop() {
 	select {
 	case <-et.stopped:
-		panic("bq: stop a stopped eager timer")
+		panic("gobeeq: stop a stopped eager timer")
 	default:
 		close(et.stopped)
 	}

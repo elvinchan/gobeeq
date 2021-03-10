@@ -36,7 +36,7 @@ func TestEagerTimer(t *testing.T) {
 		assert.Never(t, func() bool {
 			return flag
 		}, time.Millisecond*500, time.Millisecond)
-		assert.PanicsWithValue(t, "bq: stop a stopped eager timer", func() {
+		assert.PanicsWithValue(t, "gobeeq: stop a stopped eager timer", func() {
 			et.Stop()
 		})
 	})

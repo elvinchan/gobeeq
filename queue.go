@@ -3,6 +3,7 @@ package gobeeq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -18,7 +19,7 @@ import (
 var logger *log.Logger
 
 func init() {
-	SetLogger(log.New(os.Stderr, "bq: ", log.LstdFlags|log.Lshortfile))
+	SetLogger(log.New(os.Stderr, "gobeeq: ", log.LstdFlags|log.Lshortfile))
 }
 
 func SetLogger(l *log.Logger) {
@@ -26,20 +27,23 @@ func SetLogger(l *log.Logger) {
 }
 
 type Queue struct {
-	redis           *redis.Client
-	settings        *Settings
-	provider        ScriptsProvider
-	name            string
-	handler         ProcessFunc
-	concurrency     int64
-	queued, running int64
-	status          uint32 // 0 -> running, 1 -> closing, 2 -> closed
-	checkTimer      *time.Timer
-	delayedTimer    *EagerTimer
-	stopCh          chan struct{}
-	events          map[string]func(args ...interface{})
-	wg              sync.WaitGroup
-	mu              *sync.Mutex
+	redis                *redis.Client
+	name                 string
+	settings             *Settings
+	provider             ScriptsProvider
+	onRaised             func(numRaised int)
+	onSucceeded          func(jobId, result string)
+	onRetrying, onFailed func(jobId string, err error)
+	onProgress           func(jobId, progress string)
+	handler              ProcessFunc
+	concurrency          int64
+	queued, running      int64
+	status               uint32 // 0 -> running, 1 -> closing, 2 -> closed
+	checkTimer           *time.Timer
+	delayedTimer         *EagerTimer
+	stopCh               chan struct{}
+	wg                   sync.WaitGroup
+	mu                   *sync.Mutex
 }
 
 type Settings struct {
@@ -47,7 +51,6 @@ type Settings struct {
 	StallInterval       time.Duration
 	NearTermWindow      time.Duration
 	DelayedDebounce     time.Duration
-	GetEvents           bool
 	SendEvents          bool
 	ActivateDelayedJobs bool
 	RemoveOnSuccess     bool
@@ -61,8 +64,6 @@ func defaultSettings() *Settings {
 		StallInterval:   time.Second * 5,
 		NearTermWindow:  time.Second * 60 * 20,
 		DelayedDebounce: time.Second,
-		GetEvents:       true,
-		SendEvents:      true,
 		RedisScanCount:  100,
 	}
 }
@@ -91,11 +92,14 @@ func NewQueue(
 			q.settings.NearTermWindow, q.activateDelayed,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("bq: %v", err)
+			return nil, fmt.Errorf("gobeeq: %v", err)
 		}
 	}
 	var channels []string
-	if q.settings.GetEvents {
+	if q.onSucceeded != nil ||
+		q.onRetrying != nil ||
+		q.onFailed != nil ||
+		q.onProgress != nil {
 		channels = append(channels, keyEvents.use(q))
 	}
 	if q.settings.ActivateDelayedJobs {
@@ -107,7 +111,7 @@ func NewQueue(
 			for {
 				select {
 				case m := <-pb.Channel():
-					q.handleMessage(m)
+					go q.handleMessage(m)
 				case <-q.stopCh:
 					return
 				}
@@ -115,6 +119,12 @@ func NewQueue(
 		}()
 	}
 	return q, q.ensureScripts(ctx)
+}
+
+type Message struct {
+	Id    string `json:"id"`
+	Event string `json:"event"`
+	Data  string `json:"data"`
 }
 
 func (q *Queue) handleMessage(m *redis.Message) {
@@ -125,20 +135,29 @@ func (q *Queue) handleMessage(m *redis.Message) {
 		q.delayedTimer.Schedule(unixMSToTime(t))
 		return
 	}
-
-	type Message struct {
-		Id    int64  `json:"id"`
-		Event string `json:"event"`
-		Data  string `json:"data"`
-	}
 	var msg Message
 	if err := json.Unmarshal([]byte(m.Payload), &msg); err != nil {
 		return
 	}
-	if fn := q.events["job "+msg.Event]; fn != nil {
-		fn(msg.Id, msg.Data)
+	switch msg.Event {
+	case "succeeded":
+		if q.onSucceeded != nil {
+			q.onSucceeded(msg.Id, msg.Data)
+		}
+	case "retrying":
+		if q.onRetrying != nil {
+			q.onRetrying(msg.Id, errors.New(msg.Data))
+		}
+	case "failed":
+		if q.onFailed != nil {
+			q.onFailed(msg.Id, errors.New(msg.Data))
+		}
+	case "progress":
+		if q.onProgress != nil {
+			q.onProgress(msg.Id, msg.Data)
+		}
 	}
-	// TODO
+	// TODO: handle for stored job
 }
 
 func (q *Queue) keyPrefix() string {
@@ -178,14 +197,11 @@ func (q *Queue) ensureScripts(ctx context.Context) error {
 }
 
 // NewJob create a job instance with the associated user data.
-func (q *Queue) NewJob(data string, options *Options) *Job {
-	return q.newJobWithId("", data, options)
+func (q *Queue) NewJob(data string) *Job {
+	return q.newJobWithId("", data, defaultOptions())
 }
 
 func (q *Queue) newJobWithId(id string, data string, options *Options) *Job {
-	if options == nil {
-		options = defaultOptions()
-	}
 	if options.Timestamp == 0 {
 		options.Timestamp = timeToUnixMS(time.Now())
 	}
@@ -277,13 +293,13 @@ func (q *Queue) scanForJobs(ctx context.Context,
 	return q.scanForJobs(ctx, key, nextCursor, size-len(ids), ids)
 }
 
-type ProcessFunc func(context.Context, *Job) error
+type ProcessFunc func(Context) error
 
 // ProcessConcurrently begins processing jobs with the provided concurrency and
 // handler function.
 func (q *Queue) ProcessConcurrently(
 	concurrency int64,
-	h func(context.Context, *Job) error,
+	h func(Context) error,
 ) error {
 	if !q.commandable(true) {
 		return ErrQueueClosed
@@ -300,18 +316,22 @@ func (q *Queue) ProcessConcurrently(
 	atomic.StoreInt64(&q.queued, 1)
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
-		go func() {
-			if err := q.doStalledJobCheck(ctx); err != nil {
-				logger.Fatal(err)
+		if err := q.doStalledJobCheck(ctx); err != nil {
+			logger.Fatal(err)
+		}
+		for {
+			if !q.jobTick(ctx) {
+				break
 			}
-			for {
-				if !q.jobTick(ctx) {
-					break
-				}
-			}
-		}()
-		go q.activateDelayed(ctx)
-
+		}
+		<-q.stopCh
+		cancel()
+	}()
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		if q.settings.ActivateDelayedJobs {
+			q.activateDelayed(ctx)
+		}
 		<-q.stopCh
 		cancel()
 	}()
@@ -319,7 +339,7 @@ func (q *Queue) ProcessConcurrently(
 }
 
 // Process begins processing jobs with the provided handler function.
-func (q *Queue) Process(h func(context.Context, *Job) error) error {
+func (q *Queue) Process(h func(Context) error) error {
 	return q.ProcessConcurrently(1, h)
 }
 
@@ -381,7 +401,6 @@ func (q *Queue) getNextJob(ctx context.Context) (*Job, error) {
 func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	done := make(chan struct{}, 1)
 	go func() {
-		// preventStalling
 		interval := q.settings.StallInterval / 2
 		t := time.NewTimer(interval)
 		for {
@@ -409,13 +428,18 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 		done <- struct{}{}
 	}()
 
+	jobCtx := &jobContext{
+		ctx:  ctx,
+		id:   j.Id,
+		data: j.data,
+	}
 	var err error
 	if j.options.Timeout == 0 {
-		err = q.handler(ctx, j)
+		err = q.handler(jobCtx)
 	} else {
 		errc := make(chan error, 1)
 		go func() {
-			errc <- q.handler(ctx, j)
+			errc <- q.handler(jobCtx)
 		}()
 		select {
 		case err = <-errc:
@@ -423,13 +447,67 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 			err = ErrTimeout
 		}
 	}
-	// TODO: backoff
-	// finish job
-	return q.finishJob(ctx, err, j.data, j)
+	return q.finishJob(ctx, err, jobCtx.result, j)
 }
 
 func (q *Queue) preventStall(id string) error {
 	return q.redis.SRem(context.Background(), keyStalling.use(q), id).Err()
+}
+
+func (q *Queue) finishJob(ctx context.Context, err error, result string, job *Job) error {
+	_, err = q.redis.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.LRem(ctx, keyActive.use(q), 0, job.Id)
+		p.SRem(ctx, keyStalling.use(q), job.Id)
+		msg := Message{
+			Id: job.Id,
+		}
+		if err != nil {
+			job.status = StatusFailed
+			msg.Data = err.Error()
+			delay := int64(-1) // no retry
+			if job.options.Retries > 0 {
+				delay = job.options.Backoff.cal()
+			}
+			if delay < 0 {
+				if q.settings.RemoveOnFailure {
+					p.HDel(ctx, keyJobs.use(q), job.Id)
+				} else {
+					p.HSet(ctx, keyJobs.use(q), job.Id, job.toData())
+					p.SAdd(ctx, keyFailed.use(q), job.Id)
+				}
+			} else {
+				job.options.Retries -= 1
+				job.status = StatusRetrying
+				p.HSet(ctx, keyJobs.use(q), job.Id, job.toData())
+				if delay == 0 {
+					p.LPush(ctx, keyWaiting.use(q), job.Id)
+				} else {
+					t := timeToUnixMS(time.Now().Add(msToDuration(delay)))
+					p.ZAdd(ctx, keyDelayed.use(q), &redis.Z{
+						Score:  float64(t),
+						Member: job.Id,
+					})
+					p.Publish(ctx, keyEarlierDelayed.use(q), t)
+				}
+			}
+		} else {
+			job.status = StatusSucceeded
+			msg.Data = result
+			if q.settings.RemoveOnSuccess {
+				p.HDel(ctx, keyJobs.use(q), job.Id)
+			} else {
+				p.HSet(ctx, keyJobs.use(q), job.Id, job.toData())
+				p.SAdd(ctx, keySucceeded.use(q), job.Id)
+			}
+		}
+		if q.settings.SendEvents {
+			msg.Event = string(job.status)
+			v, _ := json.Marshal(msg)
+			p.Publish(ctx, keyEvents.use(q), string(v))
+		}
+		return nil
+	})
+	return err
 }
 
 // CheckStalledJobs Check for stalled jobs.
@@ -470,63 +548,6 @@ func (q *Queue) doStalledJobCheck(ctx context.Context) error {
 		},
 		q.settings.StallInterval.Microseconds(),
 	).Err()
-}
-
-func (q *Queue) finishJob(ctx context.Context, err error, data interface{}, job *Job) error {
-	_, err = q.redis.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		p.LRem(ctx, keyActive.use(q), 0, job.Id)
-		p.SRem(ctx, keyStalling.use(q), job.Id)
-		if err != nil {
-			delay := int64(-1) // no retry
-			if job.options.Retries > 0 {
-				delay = job.options.Backoff.cal()
-			}
-			if delay < 0 {
-				job.status = StatusFailed
-				if q.settings.RemoveOnFailure {
-					p.HDel(ctx, keyJobs.use(q), job.Id)
-				} else {
-					data, err := job.ToData()
-					if err != nil {
-						logger.Fatal(err)
-					}
-					p.HSet(ctx, keyJobs.use(q), job.Id, data)
-					p.SAdd(ctx, keyFailed.use(q), job.Id)
-				}
-			} else {
-				job.status = StatusRetrying
-				data, err := job.ToData()
-				if err != nil {
-					logger.Fatal(err)
-				}
-				p.HSet(ctx, keyJobs.use(q), job.Id, data)
-				if delay == 0 {
-					p.LPush(ctx, keyWaiting.use(q), job.Id)
-				} else {
-					t := timeToUnixMS(time.Now().Add(msToDuration(delay)))
-					p.ZAdd(ctx, keyDelayed.use(q), &redis.Z{
-						Score:  float64(t),
-						Member: job.Id,
-					})
-					p.Publish(ctx, keyEarlierDelayed.use(q), t)
-				}
-			}
-		} else {
-			job.status = StatusSucceeded
-			if q.settings.RemoveOnSuccess {
-				p.HDel(ctx, keyJobs.use(q), job.Id)
-			} else {
-				data, err := job.ToData()
-				if err != nil {
-					logger.Fatal(err)
-				}
-				p.HSet(ctx, keyJobs.use(q), job.Id, data)
-				p.SAdd(ctx, keySucceeded.use(q), job.Id)
-			}
-		}
-		return nil
-	})
-	return err
 }
 
 // RemoveJob removes a job from the queue by jobId.
@@ -619,7 +640,7 @@ func (q *Queue) waitTimeout(t time.Duration) error {
 	case <-done:
 		return nil
 	case <-time.After(t):
-		return fmt.Errorf("bq: jobs are not processed after %s", t)
+		return fmt.Errorf("gobeeq: jobs are not processed after %s", t)
 	}
 }
 
@@ -657,10 +678,7 @@ func (q *Queue) SaveAll(ctx context.Context, jobs []Job) error {
 	}
 	cmders, err := q.redis.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		for i := range jobs {
-			_, err := jobs[i].save(ctx, p)
-			if err != nil {
-				return err
-			}
+			_ = jobs[i].save(ctx, p)
 		}
 		return nil
 	})
@@ -705,7 +723,7 @@ func (q *Queue) activateDelayed(ctx context.Context) {
 	numRaised := vs[0].(int)
 	nextOpportunity := vs[1].(int64)
 	if numRaised > 0 {
-		if fn, ok := q.events["raised jobs"]; ok {
+		if fn := q.onRaised; fn != nil {
 			fn(numRaised)
 		}
 	}
