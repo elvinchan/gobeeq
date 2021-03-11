@@ -86,8 +86,8 @@ func NewQueue(
 	for _, opt := range opts {
 		opt(q)
 	}
-	var err error
 	if q.settings.ActivateDelayedJobs {
+		var err error
 		q.delayedTimer, err = NewEagerTimer(
 			q.settings.NearTermWindow, q.activateDelayed,
 		)
@@ -118,7 +118,7 @@ func NewQueue(
 			}
 		}()
 	}
-	return q, q.ensureScripts(ctx)
+	return q, nil
 }
 
 type Message struct {
@@ -162,38 +162,6 @@ func (q *Queue) handleMessage(m *redis.Message) {
 
 func (q *Queue) keyPrefix() string {
 	return q.settings.Prefix + ":" + q.name + ":"
-}
-
-func (q *Queue) ensureScripts(ctx context.Context) error {
-	if !q.commandable(false) {
-		return ErrQueueClosed
-	}
-	scripts := []*redis.Script{
-		q.provider.CheckStalledJobs(),
-		q.provider.AddJob(),
-		q.provider.RemoveJob(),
-		q.provider.AddDelayedJob(),
-		q.provider.RaiseDelayedJobs(),
-	}
-	var shas []string
-	for _, s := range scripts {
-		shas = append(shas, s.Hash())
-	}
-	evs, err := q.redis.ScriptExists(ctx, shas...).Result()
-	if err != nil {
-		return err
-	} else if len(evs) != len(shas) {
-		return ErrInvalidResult
-	}
-	for i := range evs {
-		if evs[i] {
-			continue
-		}
-		if _, err := scripts[i].Load(ctx, q.redis).Result(); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // NewJob create a job instance with the associated user data.
