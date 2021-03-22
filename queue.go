@@ -31,7 +31,7 @@ type Queue struct {
 	name                 string
 	settings             *Settings
 	provider             ScriptsProvider
-	onRaised             func(numRaised int)
+	onRaised             func(numRaised int64)
 	onSucceeded          func(jobId, result string)
 	onRetrying, onFailed func(jobId string, err error)
 	onProgress           func(jobId, progress string)
@@ -487,10 +487,13 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 	if err := q.doStalledJobCheck(ctx); err != nil {
 		logger.Fatal(err)
 	}
+	q.mu.Lock()
 	if q.checkTimer != nil {
+		q.mu.Unlock()
 		return
 	}
 	q.checkTimer = time.NewTimer(interval)
+	q.mu.Unlock()
 	for {
 		q.checkTimer.Reset(interval)
 		select {
@@ -514,7 +517,7 @@ func (q *Queue) doStalledJobCheck(ctx context.Context) error {
 			keyWaiting.use(q),
 			keyActive.use(q),
 		},
-		q.settings.StallInterval.Microseconds(),
+		q.settings.StallInterval.Milliseconds(),
 	).Err()
 }
 
@@ -688,7 +691,7 @@ func (q *Queue) activateDelayed(ctx context.Context) {
 	if vs == nil {
 		logger.Fatal("invalid result of raiseDelayedJobs")
 	}
-	numRaised := vs[0].(int)
+	numRaised := vs[0].(int64)
 	nextOpportunity := vs[1].(int64)
 	if numRaised > 0 {
 		if fn := q.onRaised; fn != nil {

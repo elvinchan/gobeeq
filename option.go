@@ -45,7 +45,7 @@ func WithDelayedDebounce(d time.Duration) QueueOption {
 // `delayUntil` timestamp. Note that this must be enabled on at least one
 // `Queue` instance for the delayed retry strategies (`fixed` and `exponential`)
 // - this will reactivate them after their computed delay.
-func WithActivateDelayedJobs(b bool, onRaised func(numRaised int)) QueueOption {
+func WithActivateDelayedJobs(b bool, onRaised func(numRaised int64)) QueueOption {
 	return func(q *Queue) {
 		q.settings.ActivateDelayedJobs = b
 		q.onRaised = onRaised

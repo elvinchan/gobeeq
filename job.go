@@ -126,14 +126,13 @@ func (j *Job) Save(ctx context.Context) (*Job, error) {
 	return j, nil
 }
 
-func (j *Job) save(ctx context.Context, cmd redis.Cmdable) *redis.Cmd {
+func (j *Job) save(ctx context.Context, s redis.Scripter) *redis.Cmd {
 	data := j.toData()
 	if j.options.Delay != 0 {
 		// delay job
-		return runScript(
+		return j.queue.provider.AddDelayedJob().Run(
 			ctx,
-			j.queue.provider.AddDelayedJob().Hash(),
-			cmd,
+			s,
 			[]string{
 				keyId.use(j.queue),
 				keyJobs.use(j.queue),
@@ -145,10 +144,9 @@ func (j *Job) save(ctx context.Context, cmd redis.Cmdable) *redis.Cmd {
 			j.options.Delay,
 		)
 	}
-	return runScript(
+	return j.queue.provider.AddJob().Run(
 		ctx,
-		j.queue.provider.AddJob().Hash(),
-		cmd,
+		s,
 		[]string{
 			keyId.use(j.queue),
 			keyJobs.use(j.queue),

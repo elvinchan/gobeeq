@@ -84,12 +84,17 @@ func TestQueueClose(t *testing.T) {
 	var i int
 	newQueue := func() *Queue {
 		i++
-		queue, err := NewQueue(ctx, fmt.Sprintf("test-queue-close-%d", i), client)
+		queue, err := NewQueue(
+			ctx,
+			fmt.Sprintf("test-queue-close-%d", i),
+			client,
+			WithActivateDelayedJobs(true, nil),
+		)
 		assert.NoError(t, err)
 
 		err = queue.Process(func(ctx Context) error {
 			t.Log("processing job:", ctx.GetId())
-			time.Sleep(5 * time.Second)
+			time.Sleep(2 * time.Second)
 			return nil
 		})
 		assert.NoError(t, err)
@@ -102,7 +107,7 @@ func TestQueueClose(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
-		time.Sleep(time.Second)
+		time.Sleep(time.Second) // prevent case: job not captured by worker
 		err = queue.Close()
 		assert.NoError(t, err)
 	})
@@ -113,9 +118,23 @@ func TestQueueClose(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
-		time.Sleep(time.Second)
-		err = queue.CloseTimeout(2 * time.Second)
-		assert.EqualError(t, err, "gobeeq: jobs are not processed after 2s")
+		time.Sleep(time.Second) // prevent case: job not captured by worker
+		err = queue.CloseTimeout(2 * time.Millisecond)
+		assert.EqualError(t, err, "gobeeq: jobs are not processed after 2ms")
+	})
+
+	t.Run("Should stop timer", func(t *testing.T) {
+		queue := newQueue()
+		j, err := queue.NewJob("data").Save(ctx)
+		assert.NoError(t, err)
+		assert.NotEmpty(t, j.Id)
+
+		time.Sleep(time.Second) // prevent case: job not captured by worker
+		err = queue.CloseTimeout(2 * time.Millisecond)
+		assert.EqualError(t, err, "gobeeq: jobs are not processed after 2ms")
+		assert.PanicsWithValue(t, "gobeeq: stop a stopped eager timer", func() {
+			queue.delayedTimer.Stop()
+		})
 	})
 }
 
