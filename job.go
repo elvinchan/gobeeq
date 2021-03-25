@@ -96,7 +96,7 @@ func (j *Job) Backoff(b Backoff) *Job {
 //
 // Defaults to enqueueing the job for immediate processing.
 func (j *Job) DelayUntil(t time.Time) *Job {
-	j.options.Delay = t.UnixNano() / int64(time.Millisecond)
+	j.options.Delay = timeToUnixMS(t)
 	return j
 }
 
@@ -116,10 +116,11 @@ func (j *Job) Timeout(t int64) *Job {
 // Save save job and returns job pointer for chainable call.
 func (j *Job) Save(ctx context.Context) (*Job, error) {
 	cmder := j.save(ctx, j.queue.redis)
-	if err := cmder.Err(); err != nil {
+	var err error
+	j.Id, err = cmder.Text()
+	if err != nil {
 		return nil, err
 	}
-	j.Id = cmder.String()
 	if j.options.Delay != 0 && j.queue.settings.ActivateDelayedJobs {
 		j.queue.delayedTimer.Schedule(unixMSToTime(j.options.Delay))
 	}
@@ -174,6 +175,9 @@ func (Job) fromId(ctx context.Context, q *Queue, jobId string) (*Job, error) {
 }
 
 func (Job) fromIds(ctx context.Context, q *Queue, jobIds []string) ([]Job, error) {
+	if len(jobIds) == 0 {
+		return nil, nil
+	}
 	datas, err := q.redis.HMGet(ctx, keyJobs.use(q), jobIds...).Result()
 	if err != nil {
 		return nil, err

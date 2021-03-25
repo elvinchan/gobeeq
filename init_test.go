@@ -1,6 +1,8 @@
 package gobeeq
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 
@@ -22,4 +24,14 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	os.Exit(code)
+}
+
+func MockData(i int) string {
+	d := struct {
+		Foo string `json:"foo"`
+	}{
+		Foo: fmt.Sprintf("bar-%d", i),
+	}
+	v, _ := json.Marshal(d)
+	return string(v)
 }

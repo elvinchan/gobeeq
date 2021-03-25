@@ -202,11 +202,11 @@ func (q *Queue) GetJob(ctx context.Context, id string) (*Job, error) {
 // the Redis server.
 func (q *Queue) GetJobs(ctx context.Context,
 	s Status, start, end int64, size int) ([]Job, error) {
-	if start <= 0 {
-		start = 1
+	if start < 0 {
+		start = 0
 	}
-	if end <= 0 {
-		end = 1
+	if end < 0 {
+		end = 0
 	}
 	if !q.commandable(false) {
 		return nil, nil
@@ -235,13 +235,15 @@ func (q *Queue) GetJobs(ctx context.Context,
 func (q *Queue) scanForJobs(ctx context.Context,
 	key string, cursor uint64, size int, ids map[string]struct{},
 ) ([]string, error) {
-	if size > q.settings.RedisScanCount {
+	if size <= 0 {
+		size = 1
+	} else if size > q.settings.RedisScanCount {
 		size = q.settings.RedisScanCount
 	}
 	if ids == nil {
 		ids = make(map[string]struct{})
 	}
-	keys, nextCursor, err := q.redis.SScan(ctx, key, cursor, "COUNT", int64(size)).Result()
+	keys, nextCursor, err := q.redis.SScan(ctx, key, cursor, "", int64(size)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -287,11 +289,7 @@ func (q *Queue) ProcessConcurrently(
 		if err := q.doStalledJobCheck(ctx); err != nil {
 			logger.Fatal(err)
 		}
-		for {
-			if !q.jobTick(ctx) {
-				break
-			}
-		}
+		go q.jobTick(ctx)
 		<-q.stopCh
 		cancel()
 	}()
@@ -316,43 +314,47 @@ func (q *Queue) commandable(strict bool) bool {
 	return status == 0 || (!strict && status == 1)
 }
 
-func (q *Queue) jobTick(ctx context.Context) bool {
+func (q *Queue) jobTick(ctx context.Context) {
 	if !q.commandable(true) {
 		atomic.AddInt64(&q.queued, -1)
-		return false
+		return
 	}
 	j, err := q.getNextJob(ctx)
 	if err != nil {
 		logger.Fatal(err)
-		return true
 	}
 	if !q.commandable(true) {
 		// This job will get picked up later as a stalled job if we happen to get here.
 		atomic.AddInt64(&q.queued, -1)
-		return false
+		return
 	}
 	atomic.AddInt64(&q.running, 1)
 	atomic.AddInt64(&q.queued, -1)
+	defer func() {
+		atomic.AddInt64(&q.running, -1)
+		atomic.AddInt64(&q.queued, 1)
+	}()
 	nextTick := false
 	if (q.running + q.queued) < q.concurrency { // TODO: need lock
 		atomic.AddInt64(&q.queued, 1)
 		nextTick = true
 	}
 
+	if nextTick {
+		go q.jobTick(ctx)
+	}
+
 	if j == nil {
 		// Per comment in Queue#_waitForJob, this branch is possible when
 		// the job is removed before processing can take place, but after
 		// being initially acquired.
-		return nextTick
+		return
 	}
-	go func() {
-		if err := q.runJob(ctx, j); err != nil {
-			logger.Fatal(err)
-		}
-		atomic.AddInt64(&q.running, -1)
-		atomic.AddInt64(&q.queued, 1)
-	}()
-	return true
+
+	if err := q.runJob(ctx, j); err != nil {
+		logger.Print(err)
+	}
+	go q.jobTick(ctx)
 }
 
 func (q *Queue) getNextJob(ctx context.Context) (*Job, error) {
@@ -366,6 +368,7 @@ func (q *Queue) getNextJob(ctx context.Context) (*Job, error) {
 	return Job{}.fromId(ctx, q, id)
 }
 
+// TODO: recovery
 func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	done := make(chan struct{}, 1)
 	go func() {

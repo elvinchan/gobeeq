@@ -45,7 +45,7 @@ func TestQueueProcess(t *testing.T) {
 			err = queue.Process(func(ctx Context) error {
 				t.Log("processing job:", ctx.GetId())
 				assert.JSONEq(t, fmt.Sprintf(`{"foo": "bar-%d"}`, i), ctx.GetData())
-				time.Sleep(time.Duration(cases[i]) * time.Second)
+				time.Sleep(time.Duration(cases[i]) * 100 * time.Millisecond)
 				chs[name] <- time.Now()
 				return nil
 			})
