@@ -6,7 +6,7 @@ import (
 
 // timeToUnixMS returns milliseconds unix of t
 func timeToUnixMS(t time.Time) int64 {
-	return t.Unix() / int64(time.Millisecond)
+	return t.UnixNano() / int64(time.Millisecond)
 }
 
 // unixMSToTime returns time of milliseconds unix
