@@ -282,8 +282,7 @@ func (q *Queue) ProcessConcurrently(
 	q.concurrency = concurrency
 	q.handler = ProcessFunc(h)
 	q.mu.Unlock()
-	atomic.StoreInt64(&q.running, 0)
-	atomic.StoreInt64(&q.queued, 1)
+	q.queued = 1
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := q.doStalledJobCheck(ctx); err != nil {
@@ -316,33 +315,24 @@ func (q *Queue) commandable(strict bool) bool {
 
 func (q *Queue) jobTick(ctx context.Context) {
 	if !q.commandable(true) {
-		atomic.AddInt64(&q.queued, -1)
+		q.nextTick(ctx, true, false)
 		return
 	}
 	j, err := q.getNextJob(ctx)
 	if err != nil {
-		logger.Fatal(err)
+		logger.Print(err)
+		q.nextTick(ctx, true, true)
+		return
 	}
 	if !q.commandable(true) {
 		// This job will get picked up later as a stalled job if we happen to get here.
-		atomic.AddInt64(&q.queued, -1)
+		q.nextTick(ctx, true, false)
 		return
 	}
-	atomic.AddInt64(&q.running, 1)
-	atomic.AddInt64(&q.queued, -1)
+	q.nextTick(ctx, false, true)
 	defer func() {
-		atomic.AddInt64(&q.running, -1)
-		atomic.AddInt64(&q.queued, 1)
+		q.nextTick(ctx, true, true)
 	}()
-	nextTick := false
-	if (q.running + q.queued) < q.concurrency { // TODO: need lock
-		atomic.AddInt64(&q.queued, 1)
-		nextTick = true
-	}
-
-	if nextTick {
-		go q.jobTick(ctx)
-	}
 
 	if j == nil {
 		// Per comment in Queue#_waitForJob, this branch is possible when
@@ -350,10 +340,28 @@ func (q *Queue) jobTick(ctx context.Context) {
 		// being initially acquired.
 		return
 	}
-
 	if err := q.runJob(ctx, j); err != nil {
 		logger.Print(err)
 	}
+}
+
+func (q *Queue) nextTick(ctx context.Context, endLast, startNext bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if endLast {
+		q.running--
+	} else {
+		// into running
+		q.running++
+		q.queued--
+	}
+	if !startNext {
+		return
+	}
+	if (q.running + q.queued) >= q.concurrency {
+		return
+	}
+	q.queued++
 	go q.jobTick(ctx)
 }
 
@@ -408,14 +416,20 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	if j.options.Timeout == 0 {
 		err = q.handler(jobCtx)
 	} else {
+		var cancel context.CancelFunc
+		jobCtx.ctx, cancel = context.WithTimeout(
+			jobCtx.ctx, msToDuration(j.options.Timeout),
+		)
+		defer cancel()
+
 		errc := make(chan error, 1)
 		go func() {
 			errc <- q.handler(jobCtx)
 		}()
 		select {
 		case err = <-errc:
-		case <-time.After(msToDuration(j.options.Timeout)):
-			err = ErrTimeout
+		case <-jobCtx.Done():
+			err = jobCtx.Err()
 		}
 	}
 	return q.finishJob(ctx, err, jobCtx.result, j)

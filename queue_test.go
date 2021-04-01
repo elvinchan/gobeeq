@@ -21,6 +21,7 @@ func middle(h ProcessFunc) ProcessFunc {
 */
 
 func TestQueue(t *testing.T) {
+	t.Parallel()
 	name := "test-queue-basic"
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
@@ -70,6 +71,7 @@ func TestQueueProcess(t *testing.T) {
 }
 
 func TestQueueRunning(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, "test-queue-running", client)
 	assert.NoError(t, err)
@@ -80,6 +82,7 @@ func TestQueueRunning(t *testing.T) {
 }
 
 func TestQueueClose(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var i int
 	newQueue := func() *Queue {
@@ -107,7 +110,8 @@ func TestQueueClose(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
-		time.Sleep(time.Second) // prevent case: job not captured by worker
+		waitSync() // prevent case: job not captured by worker
+
 		err = queue.Close()
 		assert.NoError(t, err)
 	})
@@ -118,7 +122,8 @@ func TestQueueClose(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
-		time.Sleep(time.Second) // prevent case: job not captured by worker
+		waitSync() // prevent case: job not captured by worker
+
 		err = queue.CloseTimeout(2 * time.Millisecond)
 		assert.EqualError(t, err, "gobeeq: jobs are not processed after 2ms")
 	})
@@ -129,7 +134,8 @@ func TestQueueClose(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
-		time.Sleep(time.Second) // prevent case: job not captured by worker
+		waitSync() // prevent case: job not captured by worker
+
 		err = queue.CloseTimeout(2 * time.Millisecond)
 		assert.EqualError(t, err, "gobeeq: jobs are not processed after 2ms")
 		assert.PanicsWithValue(t, "gobeeq: stop a stopped eager timer", func() {
@@ -139,6 +145,8 @@ func TestQueueClose(t *testing.T) {
 }
 
 func TestQueueDestroy(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, "test-queue-destroy", client)
 	assert.NoError(t, err)

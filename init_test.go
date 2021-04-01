@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
@@ -26,7 +27,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func MockData(i int) string {
+func mockData(i int) string {
 	d := struct {
 		Foo string `json:"foo"`
 	}{
@@ -34,4 +35,8 @@ func MockData(i int) string {
 	}
 	v, _ := json.Marshal(d)
 	return string(v)
+}
+
+func waitSync() {
+	time.Sleep(time.Second)
 }
