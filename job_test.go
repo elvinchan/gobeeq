@@ -474,7 +474,9 @@ func TestJobBackoff(t *testing.T) {
 
 	name := "test-job-retry"
 	ctx := context.Background()
-	queue, err := NewQueue(ctx, name, client)
+	queue, err := NewQueue(ctx, name, client,
+		WithActivateDelayedJobs(true, nil),
+	)
 	assert.NoError(t, err)
 
 	records := make(map[string][]time.Time)
@@ -508,13 +510,49 @@ func TestJobBackoff(t *testing.T) {
 		assert.Equal(t, "1", j.Id)
 		assert.Equal(t, StatusCreated, j.status)
 
-		<-ch[j.Id]
+		select {
+		case <-ch[j.Id]:
+		case <-time.After(time.Second * 8):
+			assert.FailNow(t, "timeout waiting for job finish")
+		}
 		waitSync()
 
 		// check time records
 		for i := 1; i < len(records[j.Id]); i++ {
 			diff := records[j.Id][i].Sub(records[j.Id][i-1])
 			assert.LessOrEqual(t, diff.Milliseconds(), int64(100))
+		}
+	})
+
+	t.Run("Fixed", func(t *testing.T) {
+		j := queue.NewJob(mockData(0)).Retries(times - 1).Backoff(Backoff{
+			Strategy: BackoffFixed,
+			Delay:    1000,
+		})
+		assert.Equal(t, Backoff{
+			Strategy: BackoffFixed,
+			Delay:    1000,
+		}, j.options.Backoff)
+		assert.Equal(t, StatusCreated, j.status)
+		ch["2"] = make(chan struct{})
+
+		j, err = j.Save(ctx)
+		assert.NoError(t, err)
+		assert.Equal(t, "2", j.Id)
+		assert.Equal(t, StatusCreated, j.status)
+
+		select {
+		case <-ch[j.Id]:
+		case <-time.After(time.Second * 8):
+			assert.FailNow(t, "timeout waiting for job finish")
+		}
+		waitSync()
+
+		// check time records
+		for i := 1; i < len(records[j.Id]); i++ {
+			diff := records[j.Id][i].Sub(records[j.Id][i-1])
+			assert.LessOrEqual(t, diff.Milliseconds(), int64(1100))
+			assert.GreaterOrEqual(t, diff.Milliseconds(), int64(1000))
 		}
 	})
 }

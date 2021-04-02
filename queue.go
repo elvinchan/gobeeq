@@ -715,5 +715,9 @@ func (q *Queue) activateDelayed(ctx context.Context) {
 			fn(numRaised)
 		}
 	}
-	q.delayedTimer.Schedule(unixMSToTime(nextOpportunity))
+	if nextOpportunity == -1 {
+		q.delayedTimer.Schedule(time.Time{})
+	} else {
+		q.delayedTimer.Schedule(unixMSToTime(nextOpportunity))
+	}
 }

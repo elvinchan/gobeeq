@@ -13,21 +13,21 @@ func TestEagerTimer(t *testing.T) {
 		t.Parallel()
 
 		flag := false
-		et, err := NewEagerTimer(time.Millisecond, func(_ context.Context) {
+		et, err := NewEagerTimer(time.Millisecond*100, func(_ context.Context) {
 			flag = true
 		})
 		assert.NotNil(t, et)
 		assert.NoError(t, err)
 		assert.Eventually(t, func() bool {
 			return flag
-		}, time.Millisecond*500, time.Millisecond)
+		}, time.Millisecond*500, time.Millisecond*100)
 	})
 
 	t.Run("Stop", func(t *testing.T) {
 		t.Parallel()
 
 		flag := false
-		et, err := NewEagerTimer(time.Millisecond, func(_ context.Context) {
+		et, err := NewEagerTimer(time.Millisecond*100, func(_ context.Context) {
 			flag = true
 		})
 		assert.NotNil(t, et)
@@ -59,7 +59,7 @@ func TestEagerTimer(t *testing.T) {
 		assert.True(t, et.nextTime.Before(nextTime))
 		assert.Eventually(t, func() bool {
 			return flag
-		}, time.Millisecond*500, time.Millisecond)
+		}, time.Millisecond*500, time.Millisecond*100)
 	})
 
 	t.Run("ScheduleBeforeNow", func(t *testing.T) {
@@ -79,12 +79,12 @@ func TestEagerTimer(t *testing.T) {
 		// original nextTime
 		assert.Never(t, func() bool {
 			return flag
-		}, time.Millisecond*200, time.Millisecond)
+		}, time.Millisecond*200, time.Millisecond*100)
 
 		et.Schedule(now)
 		assert.Eventually(t, func() bool {
 			return flag
-		}, time.Millisecond*500, time.Millisecond)
+		}, time.Millisecond*500, time.Millisecond*100)
 
 		assert.True(t, nextTime.Before(et.nextTime))
 	})
