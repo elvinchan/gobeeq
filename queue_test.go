@@ -2,7 +2,6 @@ package gobeeq
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -12,17 +11,9 @@ import (
 
 const testTimeout = 30 * time.Second
 
-/*
-func middle(h ProcessFunc) ProcessFunc {
-	return func(ctx context.Context, j *Job) error {
-		return nil
-	}
-}
-*/
-
 func TestQueue(t *testing.T) {
 	t.Parallel()
-	name := "test-queue-basic"
+	name := "test-queue"
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
@@ -45,20 +36,14 @@ func TestQueueProcess(t *testing.T) {
 			chs[name] = make(chan time.Time)
 			err = queue.Process(func(ctx Context) error {
 				t.Log("processing job:", ctx.GetId())
-				assert.JSONEq(t, fmt.Sprintf(`{"foo": "bar-%d"}`, i), ctx.GetData())
+				assert.Equal(t, mockData(i), ctx.GetData())
 				time.Sleep(time.Duration(cases[i]) * 100 * time.Millisecond)
 				chs[name] <- time.Now()
 				return nil
 			})
 			assert.NoError(t, err)
 
-			data := struct {
-				Foo string `json:"foo"`
-			}{
-				Foo: fmt.Sprintf("bar-%d", i),
-			}
-			db, _ := json.Marshal(data)
-			_, err = queue.NewJob(string(db)).Save(ctx)
+			_, err = queue.NewJob(mockData(i)).Save(ctx)
 			assert.NoError(t, err)
 
 			select {
@@ -161,4 +146,164 @@ func TestQueueDestroy(t *testing.T) {
 	v, err := client.Keys(ctx, queue.keyPrefix()+"*").Result()
 	assert.NoError(t, err)
 	assert.Empty(t, v)
+}
+
+func TestQueueSaveAll(t *testing.T) {
+	t.Run("Normal", func(t *testing.T) {
+		t.Parallel()
+
+		name := "test-queue-save-all-normal"
+		ctx := context.Background()
+		queue, err := NewQueue(ctx, name, client)
+		assert.NoError(t, err)
+
+		count := 10
+
+		var jobs []Job
+		for i := 0; i < count; i++ {
+			j := queue.NewJob(mockData(i))
+			jobs = append(jobs, *j)
+		}
+		err = queue.SaveAll(ctx, jobs)
+		assert.NoError(t, err)
+
+		results, err := queue.GetJobs(ctx, StatusWaiting, 0, 100, 0)
+		assert.NoError(t, err)
+		assert.Len(t, results, count)
+
+		for i, r := range results {
+			j := jobs[count-i-1]
+
+			assert.Equal(t, j.Id, r.Id)
+			assert.Equal(t, j.queue, r.queue)
+			assert.Equal(t, j.data, r.data)
+
+			assert.Equal(t, j.options.Backoff, r.options.Backoff)
+			assert.Equal(t, j.options.Timeout, r.options.Timeout)
+			assert.Equal(t, j.options.Delay, r.options.Delay)
+			assert.Equal(t, j.options.Retries, r.options.Retries)
+		}
+	})
+
+	t.Run("Delayed", func(t *testing.T) {
+		t.Parallel()
+
+		name := "test-queue-save-all-delayed"
+		ctx := context.Background()
+		queue, err := NewQueue(ctx, name, client)
+		assert.NoError(t, err)
+
+		count := 10
+
+		var jobs []Job
+		for i := 0; i < count; i++ {
+			j := queue.NewJob(mockData(i))
+			if i%2 == 0 {
+				j.DelayUntil(time.Now().Add(time.Minute))
+			}
+			jobs = append(jobs, *j)
+		}
+		err = queue.SaveAll(ctx, jobs)
+		assert.NoError(t, err)
+
+		results, err := queue.GetJobs(ctx, StatusWaiting, 0, 100, 0)
+		assert.NoError(t, err)
+		assert.Len(t, results, count/2)
+
+		for i, r := range results {
+			j := jobs[count-2*i-1]
+
+			assert.Equal(t, j.Id, r.Id)
+			assert.Equal(t, j.queue, r.queue)
+			assert.Equal(t, j.data, r.data)
+
+			assert.Equal(t, j.options.Backoff, r.options.Backoff)
+			assert.Equal(t, j.options.Timeout, r.options.Timeout)
+			assert.Equal(t, j.options.Delay, r.options.Delay)
+			assert.Equal(t, j.options.Retries, r.options.Retries)
+		}
+
+		results, err = queue.GetJobs(ctx, StatusDelayed, 0, 100, 0)
+		assert.NoError(t, err)
+		assert.Len(t, results, count/2)
+
+		for i, r := range results {
+			j := jobs[i*2]
+
+			assert.Equal(t, j.Id, r.Id)
+			assert.Equal(t, j.queue, r.queue)
+			assert.Equal(t, j.data, r.data)
+
+			assert.Equal(t, j.options.Backoff, r.options.Backoff)
+			assert.Equal(t, j.options.Timeout, r.options.Timeout)
+			assert.Equal(t, j.options.Delay, r.options.Delay)
+			assert.Equal(t, j.options.Retries, r.options.Retries)
+		}
+	})
+
+	t.Run("Mix", func(t *testing.T) {
+		t.Parallel()
+
+		name := "test-queue-save-all-mix"
+		ctx := context.Background()
+		queue, err := NewQueue(ctx, name, client)
+		assert.NoError(t, err)
+
+		count := 10
+
+		var (
+			jobs        []Job
+			saveAllJobs []Job
+		)
+		for i := 0; i < count; i++ {
+			j := queue.NewJob(mockData(i))
+			if i%2 == 0 {
+				j.DelayUntil(time.Now().Add(time.Minute))
+			}
+			if i < count/2 {
+				j, err = j.Save(ctx)
+				assert.NoError(t, err)
+				jobs = append(jobs, *j)
+			} else {
+				saveAllJobs = append(saveAllJobs, *j)
+			}
+		}
+		err = queue.SaveAll(ctx, saveAllJobs)
+		assert.NoError(t, err)
+		jobs = append(jobs, saveAllJobs...)
+
+		results, err := queue.GetJobs(ctx, StatusWaiting, 0, 100, 0)
+		assert.NoError(t, err)
+		assert.Len(t, results, count/2)
+
+		for i, r := range results {
+			j := jobs[count-2*i-1]
+
+			assert.Equal(t, j.Id, r.Id)
+			assert.Equal(t, j.queue, r.queue)
+			assert.Equal(t, j.data, r.data)
+
+			assert.Equal(t, j.options.Backoff, r.options.Backoff)
+			assert.Equal(t, j.options.Timeout, r.options.Timeout)
+			assert.Equal(t, j.options.Delay, r.options.Delay)
+			assert.Equal(t, j.options.Retries, r.options.Retries)
+		}
+
+		results, err = queue.GetJobs(ctx, StatusDelayed, 0, 100, 0)
+		assert.NoError(t, err)
+		assert.Len(t, results, count/2)
+
+		for i, r := range results {
+			j := jobs[i*2]
+
+			assert.Equal(t, j.Id, r.Id)
+			assert.Equal(t, j.queue, r.queue)
+			assert.Equal(t, j.data, r.data)
+
+			assert.Equal(t, j.options.Backoff, r.options.Backoff)
+			assert.Equal(t, j.options.Timeout, r.options.Timeout)
+			assert.Equal(t, j.options.Delay, r.options.Delay)
+			assert.Equal(t, j.options.Retries, r.options.Retries)
+		}
+	})
 }

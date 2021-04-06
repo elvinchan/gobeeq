@@ -664,20 +664,46 @@ func (q *Queue) SaveAll(ctx context.Context, jobs []Job) error {
 	if !q.commandable(true) {
 		return ErrQueueClosed
 	}
-	cmders, err := q.redis.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		for i := range jobs {
-			_ = jobs[i].save(ctx, p)
+	var loadAddJob, loadAddDelayedJob bool
+	p := q.redis.Pipeline()
+	for i := range jobs {
+		_ = jobs[i].save(ctx, p)
+		if jobs[i].options.Delay == 0 {
+			loadAddJob = true
+		} else {
+			loadAddDelayedJob = true
 		}
-		return nil
-	})
+	}
+	// note: this is to guarantee scipts exist since Run() may return NOSCRIPT
+	// in pipeline.
+	if loadAddJob {
+		b, _ := q.provider.AddJob().Exists(ctx, q.redis).Result()
+		if len(b) == 0 || !b[0] {
+			err := q.provider.AddJob().Load(ctx, q.redis).Err()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if loadAddDelayedJob {
+		b, _ := q.provider.AddDelayedJob().Exists(ctx, q.redis).Result()
+		if len(b) == 0 || !b[0] {
+			err := q.provider.AddDelayedJob().Load(ctx, q.redis).Err()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	cmders, err := p.Exec(ctx)
 	if err != nil {
 		return err
 	}
 	for i := range jobs {
-		jobs[i].Id, err = cmders[i].(*redis.StringCmd).Result()
+		v, err := cmders[i].(*redis.Cmd).Result()
 		if err != nil {
 			return err
 		}
+		jobs[i].Id = v.(string)
 		if jobs[i].options.Delay != 0 && q.settings.ActivateDelayedJobs {
 			q.delayedTimer.Schedule(unixMSToTime(jobs[i].options.Delay))
 		}
