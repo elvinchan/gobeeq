@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -404,14 +405,14 @@ func TestJobTimeout(t *testing.T) {
 	assert.NoError(t, err)
 
 	ch := make(chan struct{})
-	times := 3
+	times := int32(3)
 	err = queue.Process(func(ctx Context) error {
 		t.Log("processing job:", ctx.GetId())
 		<-ctx.Done()
 		if ctx.GetId() == "1" {
 			ch <- struct{}{}
 		} else {
-			times--
+			times := atomic.AddInt32(&times, -1)
 			if times == 0 {
 				ch <- struct{}{}
 			}
@@ -442,7 +443,8 @@ func TestJobTimeout(t *testing.T) {
 	})
 
 	t.Run("Retry", func(t *testing.T) {
-		j := queue.NewJob(mockData(1)).Timeout(100).Retries(times - 1)
+		times := atomic.LoadInt32(&times)
+		j := queue.NewJob(mockData(1)).Timeout(100).Retries(int(times) - 1)
 		assert.Equal(t, 100*time.Millisecond, msToDuration(j.options.Timeout))
 		assert.Equal(t, StatusCreated, j.status)
 

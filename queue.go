@@ -42,7 +42,8 @@ type Queue struct {
 	checkTimer           *time.Timer
 	delayedTimer         *EagerTimer
 	stopCh               chan struct{}
-	wg                   sync.WaitGroup
+	doneCh               chan struct{}
+	once                 *sync.Once
 	mu                   *sync.Mutex
 }
 
@@ -81,6 +82,8 @@ func NewQueue(
 		provider: defaultScriptsProvider,
 		name:     name,
 		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
+		once:     &sync.Once{},
 		mu:       &sync.Mutex{},
 	}
 	for _, opt := range opts {
@@ -315,25 +318,27 @@ func (q *Queue) commandable(strict bool) bool {
 
 func (q *Queue) jobTick(ctx context.Context) {
 	if !q.commandable(true) {
-		q.nextTick(ctx, true, false)
+		q.endTick(ctx)
 		return
 	}
 	j, err := q.getNextJob(ctx)
 	if err != nil {
 		logger.Print(err)
-		q.nextTick(ctx, true, true)
+		go q.jobTick(ctx) // TODO: use retry?
 		return
 	}
 	if !q.commandable(true) {
 		// This job will get picked up later as a stalled job if we happen to get here.
-		q.nextTick(ctx, true, false)
+		q.endTick(ctx)
 		return
 	}
-	q.nextTick(ctx, false, true)
+	q.nextTick(ctx)
 	defer func() {
-		q.nextTick(ctx, true, true)
+		q.endRun()
+		go q.jobTick(ctx)
 	}()
 
+	q.startRun()
 	if j == nil {
 		// Per comment in Queue#_waitForJob, this branch is possible when
 		// the job is removed before processing can take place, but after
@@ -345,24 +350,39 @@ func (q *Queue) jobTick(ctx context.Context) {
 	}
 }
 
-func (q *Queue) nextTick(ctx context.Context, endLast, startNext bool) {
+func (q *Queue) endTick(ctx context.Context) {
+	q.mu.Lock()
+	q.queued--
+	q.mu.Unlock()
+}
+
+func (q *Queue) nextTick(ctx context.Context) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if endLast {
-		q.running--
-	} else {
-		// into running
-		q.running++
-		q.queued--
-	}
-	if !startNext {
-		return
-	}
-	if (q.running + q.queued) >= q.concurrency {
+	if q.running+q.queued >= q.concurrency {
 		return
 	}
 	q.queued++
 	go q.jobTick(ctx)
+}
+
+func (q *Queue) startRun() {
+	q.mu.Lock()
+	q.running++
+	q.queued--
+	q.mu.Unlock()
+}
+
+func (q *Queue) endRun() {
+	q.mu.Lock()
+	q.running--
+	q.queued++
+	if q.running == 0 && !q.commandable(true) {
+		q.once.Do(func() {
+			close(q.doneCh)
+		})
+	}
+	q.mu.Unlock()
 }
 
 func (q *Queue) getNextJob(ctx context.Context) (*Job, error) {
@@ -401,9 +421,7 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 		}
 	}()
 
-	q.wg.Add(1)
 	defer func() {
-		q.wg.Done()
 		done <- struct{}{}
 	}()
 
@@ -424,7 +442,13 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 
 		errc := make(chan error, 1)
 		go func() {
-			errc <- q.handler(jobCtx)
+			err := q.handler(jobCtx)
+			// note: make sure err == DeadlineExceeded if jobCtx is done.
+			select {
+			case <-jobCtx.Done():
+			default:
+				errc <- err
+			}
 		}()
 		select {
 		case err = <-errc:
@@ -618,14 +642,15 @@ func (q *Queue) CloseTimeout(t time.Duration) error {
 }
 
 func (q *Queue) waitTimeout(t time.Duration) error {
-	done := make(chan struct{}, 1)
-	go func() {
-		q.wg.Wait()
-		done <- struct{}{}
-	}()
+	q.mu.Lock()
+	running := q.running
+	q.mu.Unlock()
+	if running == 0 {
+		return nil
+	}
 
 	select {
-	case <-done:
+	case <-q.doneCh:
 		return nil
 	case <-time.After(t):
 		return fmt.Errorf("gobeeq: jobs are not processed after %s", t)

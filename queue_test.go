@@ -23,8 +23,8 @@ func TestQueue(t *testing.T) {
 func TestQueueProcess(t *testing.T) {
 	ctx := context.Background()
 	cases := []int{1, 3, 5}
-	chs := make(map[string]chan time.Time)
 	for i := range cases {
+		i := i
 		t.Run(fmt.Sprintf("Process delay: %d", i), func(t *testing.T) {
 			t.Parallel()
 
@@ -33,12 +33,12 @@ func TestQueueProcess(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, name, queue.name)
 
-			chs[name] = make(chan time.Time)
+			ch := make(chan struct{})
 			err = queue.Process(func(ctx Context) error {
 				t.Log("processing job:", ctx.GetId())
 				assert.Equal(t, mockData(i), ctx.GetData())
 				time.Sleep(time.Duration(cases[i]) * 100 * time.Millisecond)
-				chs[name] <- time.Now()
+				ch <- struct{}{}
 				return nil
 			})
 			assert.NoError(t, err)
@@ -47,7 +47,7 @@ func TestQueueProcess(t *testing.T) {
 			assert.NoError(t, err)
 
 			select {
-			case <-chs[name]:
+			case <-ch:
 			case <-time.After(testTimeout):
 				t.Fatalf("job was not processed")
 			}
