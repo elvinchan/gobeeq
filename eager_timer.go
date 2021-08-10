@@ -13,7 +13,7 @@ type EagerTimer struct {
 	maxDelay time.Duration
 	fn       func(ctx context.Context)
 	timer    *time.Timer
-	nextTime time.Time
+	nextTime time.Time // slightly earlier than actual trigger time
 	manual   chan struct{}
 	stopped  chan struct{}
 	mu       *sync.Mutex
@@ -21,7 +21,8 @@ type EagerTimer struct {
 
 // New create an eager timer with maximun delay and callback function for
 // scheduling.
-func NewEagerTimer(maxDelay time.Duration, fn func(ctx context.Context)) (*EagerTimer, error) {
+func NewEagerTimer(maxDelay time.Duration, fn func(ctx context.Context),
+) (*EagerTimer, error) {
 	if maxDelay <= 0 {
 		return nil, errors.New("invalid maxDelay")
 	} else if fn == nil {
@@ -96,12 +97,8 @@ func (et *EagerTimer) nextLocked(d time.Duration) {
 	et.timer.Reset(d)
 }
 
-// TODO: if now & t is near?
 func (et *EagerTimer) immediateLocked() {
-	t := time.Now().Add(et.maxDelay)
-	if !t.Equal(et.nextTime) {
-		et.nextLocked(et.maxDelay)
-	}
+	et.nextLocked(et.maxDelay)
 	// try to notify executor to schedule immediately, if not received,
 	// the executor is busy now, do nothing.
 	select {

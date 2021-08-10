@@ -140,7 +140,7 @@ func TestQueueDestroy(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, j.Id)
 
-	err = queue.Destory(ctx)
+	err = queue.Destroy(ctx)
 	assert.NoError(t, err)
 
 	v, err := client.Keys(ctx, queue.keyPrefix()+"*").Result()

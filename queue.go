@@ -666,8 +666,8 @@ func (q *Queue) IsRunning() bool {
 	return atomic.LoadUint32(&q.status) == 0
 }
 
-// Destory removes all Redis keys belonging to this queue.
-func (q *Queue) Destory(ctx context.Context) error {
+// Destroy removes all Redis keys belonging to this queue.
+func (q *Queue) Destroy(ctx context.Context) error {
 	if !q.commandable(false) {
 		return ErrQueueClosed
 	}

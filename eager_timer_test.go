@@ -36,7 +36,7 @@ func TestEagerTimer(t *testing.T) {
 		et.Stop()
 		assert.Never(t, func() bool {
 			return atomic.LoadUint32(&flag) == 1
-		}, time.Millisecond*500, time.Millisecond)
+		}, time.Millisecond*500, time.Millisecond*100)
 		assert.PanicsWithValue(t, "gobeeq: stop a stopped eager timer", func() {
 			et.Stop()
 		})
