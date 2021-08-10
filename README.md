@@ -8,7 +8,7 @@ Golang implementation of [Bee-Queue](https://github.com/bee-queue/bee-queue). A 
 [![MPLv2 License](https://img.shields.io/badge/license-MPLv2-blue.svg)](https://www.mozilla.org/MPL/2.0/)
 
 ## Prerequisites
-- **[Go](https://golang.org/)**: 1.13 and above **three latest major** [releases][go-releases].
+- **[Go](https://golang.org/)**: 1.13 and above.
 
 # Todo
 - Job store

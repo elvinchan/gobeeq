@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -583,4 +584,64 @@ func TestJobBackoff(t *testing.T) {
 			assert.GreaterOrEqual(t, diff.Milliseconds(), int64(500*math.Pow(2, float64(i-1))))
 		}
 	})
+}
+
+func TestJobRemove(t *testing.T) {
+	t.Parallel()
+
+	name := "test-job-remove"
+	ctx := context.Background()
+	queue, err := NewQueue(ctx, name, client)
+	assert.NoError(t, err)
+
+	job1, err := queue.NewJob(mockData(0)).Save(ctx)
+	assert.NoError(t, err)
+
+	job2, err := queue.NewJob(mockData(1)).Save(ctx)
+	assert.NoError(t, err)
+
+	job1, err = queue.GetJob(ctx, job1.Id)
+	assert.NoError(t, err)
+	assert.Equal(t, StatusCreated, job1.status)
+	assert.Equal(t, mockData(0), job1.data)
+
+	job2, err = queue.GetJob(ctx, job2.Id)
+	assert.NoError(t, err)
+	assert.Equal(t, StatusCreated, job2.status)
+	assert.Equal(t, mockData(1), job2.data)
+
+	// remove 1
+	err = job1.Remove(ctx)
+	assert.NoError(t, err)
+
+	job1, err = queue.GetJob(ctx, job1.Id)
+	assert.Equal(t, redis.Nil, err)
+	assert.Nil(t, job1)
+
+	job2, err = queue.GetJob(ctx, job2.Id)
+	assert.NoError(t, err)
+	assert.Equal(t, StatusCreated, job2.status)
+	assert.Equal(t, mockData(1), job2.data)
+
+	// process
+	err = queue.Process(func(ctx Context) error {
+		t.Log("processing job:", ctx.GetId())
+		return nil
+	})
+	assert.NoError(t, err)
+
+	waitSync() // prevent case: job not captured by worker
+
+	job2, err = queue.GetJob(ctx, job2.Id)
+	assert.NoError(t, err)
+	assert.Equal(t, StatusSucceeded, job2.status)
+	assert.Equal(t, mockData(1), job2.data)
+
+	// remove 2
+	err = job2.Remove(ctx)
+	assert.NoError(t, err)
+
+	job2, err = queue.GetJob(ctx, job2.Id)
+	assert.Equal(t, redis.Nil, err)
+	assert.Nil(t, job2)
 }

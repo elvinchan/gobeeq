@@ -567,7 +567,7 @@ func (q *Queue) doStalledJobCheck(ctx context.Context) error {
 // This may have unintended side-effect, e.g. if the job is currently being
 // processed by another worker, so only use this method when you know it's safe.
 func (q *Queue) RemoveJob(ctx context.Context, id string) error {
-	return q.provider.RemoveJob().Run(
+	err := q.provider.RemoveJob().Run(
 		ctx,
 		q.redis,
 		[]string{
@@ -581,6 +581,10 @@ func (q *Queue) RemoveJob(ctx context.Context, id string) error {
 		},
 		id,
 	).Err()
+	if err == redis.Nil {
+		return nil
+	}
+	return err
 }
 
 type QueueStatus struct {
