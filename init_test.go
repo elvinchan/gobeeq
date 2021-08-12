@@ -35,5 +35,5 @@ func mockData(i int) string {
 }
 
 func waitSync() {
-	time.Sleep(time.Second)
+	time.Sleep(time.Millisecond * 200)
 }

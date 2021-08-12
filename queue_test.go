@@ -344,8 +344,10 @@ func TestCheckStalledJobs(t *testing.T) {
 		// let worker queue stop prventing stall
 		err = workerClient.Close()
 		assert.NoError(t, err)
-		err = workerQueue.CloseTimeout(0)
-		assert.EqualError(t, err, "gobeeq: jobs are not processed after 0s")
+		// job would abort after getting close signal despite redis client
+		// already closed
+		err = workerQueue.Close()
+		assert.NoError(t, err)
 
 		times := int32(0)
 		err = queue.Process(func(ctx Context) error {
@@ -389,8 +391,10 @@ func TestCheckStalledJobs(t *testing.T) {
 		// let worker queue stop prventing stall
 		err = workerClient.Close()
 		assert.NoError(t, err)
-		err = workerQueue.CloseTimeout(0)
-		assert.EqualError(t, err, "gobeeq: jobs are not processed after 0s")
+		// job would abort after getting close signal despite redis client
+		// already closed
+		err = workerQueue.Close()
+		assert.NoError(t, err)
 
 		times := int32(0)
 		err = queue.Process(func(ctx Context) error {
