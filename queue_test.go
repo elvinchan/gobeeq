@@ -3,9 +3,11 @@ package gobeeq
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -305,5 +307,99 @@ func TestQueueSaveAll(t *testing.T) {
 			assert.Equal(t, j.options.Delay, r.options.Delay)
 			assert.Equal(t, j.options.Retries, r.options.Retries)
 		}
+	})
+}
+
+func TestCheckStalledJobs(t *testing.T) {
+	t.Run("WithCheck", func(t *testing.T) {
+		t.Parallel()
+
+		name := "test-queue-stall-with-check"
+		ctx := context.Background()
+		interval := time.Millisecond * 100
+		queue, err := NewQueue(ctx, name, client, WithStallInterval(interval))
+		assert.NoError(t, err)
+
+		go queue.CheckStalledJobs(interval / 2)
+
+		_, err = queue.NewJob(mockData(0)).Save(ctx)
+		assert.NoError(t, err)
+
+		workerClient := redis.NewClient(&redis.Options{
+			Password: client.Options().Password,
+			Addr:     client.Options().Addr,
+			DB:       client.Options().DB,
+		})
+		workerQueue, err := NewQueue(ctx, name, workerClient, WithStallInterval(interval))
+		assert.NoError(t, err)
+
+		err = workerQueue.Process(func(ctx Context) error {
+			<-ctx.Done()
+			return nil
+		})
+		assert.NoError(t, err)
+
+		waitSync() // prevent case: job not captured by worker
+
+		// let worker queue stop prventing stall
+		err = workerClient.Close()
+		assert.NoError(t, err)
+		err = workerQueue.CloseTimeout(0)
+		assert.EqualError(t, err, "gobeeq: jobs are not processed after 0s")
+
+		times := int32(0)
+		err = queue.Process(func(ctx Context) error {
+			atomic.StoreInt32(&times, 1)
+			return nil
+		})
+		assert.NoError(t, err)
+		assert.Eventually(t, func() bool {
+			return atomic.LoadInt32(&times) == 1
+		}, time.Millisecond*400, time.Millisecond*100)
+	})
+
+	t.Run("WithoutCheck", func(t *testing.T) {
+		t.Parallel()
+
+		name := "test-queue-stall-without-check"
+		ctx := context.Background()
+		interval := time.Millisecond * 100
+		queue, err := NewQueue(ctx, name, client, WithStallInterval(interval))
+		assert.NoError(t, err)
+
+		_, err = queue.NewJob(mockData(0)).Save(ctx)
+		assert.NoError(t, err)
+
+		workerClient := redis.NewClient(&redis.Options{
+			Password: client.Options().Password,
+			Addr:     client.Options().Addr,
+			DB:       client.Options().DB,
+		})
+		workerQueue, err := NewQueue(ctx, name, workerClient, WithStallInterval(interval))
+		assert.NoError(t, err)
+
+		err = workerQueue.Process(func(ctx Context) error {
+			<-ctx.Done()
+			return nil
+		})
+		assert.NoError(t, err)
+
+		waitSync() // prevent case: job not captured by worker
+
+		// let worker queue stop prventing stall
+		err = workerClient.Close()
+		assert.NoError(t, err)
+		err = workerQueue.CloseTimeout(0)
+		assert.EqualError(t, err, "gobeeq: jobs are not processed after 0s")
+
+		times := int32(0)
+		err = queue.Process(func(ctx Context) error {
+			atomic.StoreInt32(&times, 1)
+			return nil
+		})
+		assert.NoError(t, err)
+		assert.Never(t, func() bool {
+			return atomic.LoadInt32(&times) == 1
+		}, time.Millisecond*400, time.Millisecond*100)
 	})
 }

@@ -1,28 +1,25 @@
 package gobeeq
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 )
 
 var client *redis.Client
 
 func TestMain(m *testing.M) {
-	s, err := miniredis.Run()
-	if err != nil {
+	client = redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	if err := client.FlushDB(context.Background()).Err(); err != nil {
 		panic(err)
 	}
-	defer s.Close()
-	client = redis.NewClient(&redis.Options{
-		Addr: s.Addr(),
-	})
-
 	code := m.Run()
 	os.Exit(code)
 }

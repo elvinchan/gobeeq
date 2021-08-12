@@ -407,7 +407,7 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 			select {
 			case <-t.C:
 				if err := q.preventStall(j.Id); err != nil {
-					logger.Fatal(err)
+					logger.Println(err)
 				}
 			case <-done:
 				if !t.Stop() {
