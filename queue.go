@@ -592,7 +592,11 @@ type QueueStatus struct {
 	NewestJobId int64
 }
 
-// CheckHealth check the "health" of the queue and returns queue status.
+// CheckHealth check the "health" of the queue. Returns the number of jobs in
+// each state (`waiting`, `active`, `succeeded`, `failed`, `delayed`), and the
+// newest job ID (if using the default ID behavior). You can periodically query
+// the `NewestJobId` to estimate the job creation throughput, and can infer the
+// job processing throughput by incorporating the `waiting` and `active` counts.
 func (q *Queue) CheckHealth(ctx context.Context) (*QueueStatus, error) {
 	if !q.commandable(false) {
 		return nil, ErrQueueClosed

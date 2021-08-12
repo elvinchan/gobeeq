@@ -2,6 +2,7 @@ package gobeeq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -406,4 +407,64 @@ func TestCheckStalledJobs(t *testing.T) {
 			return atomic.LoadInt32(&times) == 1
 		}, time.Millisecond*400, time.Millisecond*100)
 	})
+}
+
+func TestCheckHealth(t *testing.T) {
+	t.Parallel()
+
+	name := "test-queue-check-health"
+	ctx := context.Background()
+	queue, err := NewQueue(ctx, name, client)
+	assert.NoError(t, err)
+
+	count := 10
+	active := 2
+
+	var jobs []Job
+	for i := 0; i < count; i++ {
+		j := queue.NewJob(mockData(i))
+		if i%2 == 0 {
+			j.DelayUntil(time.Now().Add(time.Minute))
+		}
+		jobs = append(jobs, *j)
+	}
+	err = queue.SaveAll(ctx, jobs)
+	assert.NoError(t, err)
+
+	ch := make(chan struct{})
+
+	err = queue.ProcessConcurrently(int64(active), func(ctx Context) error {
+		t.Log("processing job:", ctx.GetId())
+		<-ch
+		if ctx.GetId() == "8" {
+			return errors.New("fail as expected")
+		}
+		return nil
+	})
+	assert.NoError(t, err)
+
+	waitSync()
+
+	status, err := queue.CheckHealth(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, status.Keys, 5)
+	assert.Equal(t, int64(3), status.Keys[keyWaiting])
+	assert.Equal(t, int64(2), status.Keys[keyActive])
+	assert.Equal(t, int64(0), status.Keys[keySucceeded])
+	assert.Equal(t, int64(0), status.Keys[keyFailed])
+	assert.Equal(t, int64(5), status.Keys[keyDelayed])
+	assert.Equal(t, int64(10), status.NewestJobId)
+
+	close(ch)
+	waitSync()
+
+	status, err = queue.CheckHealth(ctx)
+	assert.NoError(t, err)
+	assert.Len(t, status.Keys, 5)
+	assert.Equal(t, int64(0), status.Keys[keyWaiting])
+	assert.Equal(t, int64(0), status.Keys[keyActive])
+	assert.Equal(t, int64(4), status.Keys[keySucceeded])
+	assert.Equal(t, int64(1), status.Keys[keyFailed])
+	assert.Equal(t, int64(5), status.Keys[keyDelayed])
+	assert.Equal(t, int64(10), status.NewestJobId)
 }
