@@ -1,6 +1,9 @@
 package gobeeq
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type QueueOption func(*Queue)
 
@@ -38,6 +41,13 @@ func WithNearTermWindow(d time.Duration) QueueOption {
 func WithDelayedDebounce(d time.Duration) QueueOption {
 	return func(q *Queue) {
 		q.settings.DelayedDebounce = d
+	}
+}
+
+// TODO: merge these funcs to WithSettings()
+func WithSendEvents(b bool) QueueOption {
+	return func(q *Queue) {
+		q.settings.SendEvents = b
 	}
 }
 
@@ -85,7 +95,7 @@ func WithScriptsProvider(i ScriptsProvider) QueueOption {
 }
 
 // WithOnJobSucceeded set a receiver for job succeeded event message from Redis.
-func WithOnJobSucceeded(fn func(jobId, result string)) QueueOption {
+func WithOnJobSucceeded(fn func(jobId string, result json.RawMessage)) QueueOption {
 	return func(q *Queue) {
 		q.onSucceeded = fn
 	}
@@ -106,7 +116,7 @@ func WithOnJobFailed(fn func(jobId string, err error)) QueueOption {
 }
 
 // WithOnJobProgress set a receiver for job progress event message from Redis.
-func WithOnJobProgress(fn func(jobId, progress string)) QueueOption {
+func WithOnJobProgress(fn func(jobId string, progress json.RawMessage)) QueueOption {
 	return func(q *Queue) {
 		q.onProgress = fn
 	}

@@ -32,9 +32,9 @@ type Queue struct {
 	settings             *Settings
 	provider             ScriptsProvider
 	onRaised             func(numRaised int64)
-	onSucceeded          func(jobId, result string)
+	onSucceeded          func(jobId string, result json.RawMessage)
 	onRetrying, onFailed func(jobId string, err error)
-	onProgress           func(jobId, progress string)
+	onProgress           func(jobId string, progress json.RawMessage)
 	handler              ProcessFunc
 	concurrency          int64
 	queued, running      int64
@@ -125,9 +125,9 @@ func NewQueue(
 }
 
 type Message struct {
-	Id    string `json:"id"`
-	Event string `json:"event"`
-	Data  string `json:"data"`
+	Id    string          `json:"id"`
+	Event string          `json:"event"`
+	Data  json.RawMessage `json:"data"`
 }
 
 func (q *Queue) handleMessage(m *redis.Message) {
@@ -149,11 +149,15 @@ func (q *Queue) handleMessage(m *redis.Message) {
 		}
 	case "retrying":
 		if q.onRetrying != nil {
-			q.onRetrying(msg.Id, errors.New(msg.Data))
+			var errStr string
+			_ = json.Unmarshal(msg.Data, &errStr)
+			q.onRetrying(msg.Id, errors.New(errStr))
 		}
 	case "failed":
 		if q.onFailed != nil {
-			q.onFailed(msg.Id, errors.New(msg.Data))
+			var errStr string
+			_ = json.Unmarshal(msg.Data, &errStr)
+			q.onFailed(msg.Id, errors.New(errStr))
 		}
 	case "progress":
 		if q.onProgress != nil {
@@ -167,12 +171,13 @@ func (q *Queue) keyPrefix() string {
 	return q.settings.Prefix + ":" + q.name + ":"
 }
 
-// NewJob create a job instance with the associated user data.
-func (q *Queue) NewJob(data string) *Job {
-	return q.newJobWithId("", data, defaultOptions())
+// CreateJob create a job instance with the associated user data.
+func (q *Queue) CreateJob(data interface{}) *Job {
+	return q.createJobWithId("", data, defaultOptions())
 }
 
-func (q *Queue) newJobWithId(id string, data string, options *Options) *Job {
+func (q *Queue) createJobWithId(id string, data interface{}, options *Options,
+) *Job {
 	if options.Timestamp == 0 {
 		options.Timestamp = timeToUnixMS(time.Now())
 	}
@@ -428,7 +433,7 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	jobCtx := &jobContext{
 		ctx:  ctx,
 		id:   j.Id,
-		data: j.data,
+		data: j.data.(json.RawMessage),
 	}
 	var err error
 	if j.options.Timeout == 0 {
@@ -463,8 +468,13 @@ func (q *Queue) preventStall(id string) error {
 	return q.redis.SRem(context.Background(), keyStalling.use(q), id).Err()
 }
 
-func (q *Queue) finishJob(ctx context.Context, err error, result string, job *Job) error {
+func (q *Queue) finishJob(ctx context.Context, err error, result json.RawMessage,
+	job *Job) error {
 	_, err = q.redis.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		data := func() string {
+			v, _ := job.toData()
+			return v
+		}
 		p.LRem(ctx, keyActive.use(q), 0, job.Id)
 		p.SRem(ctx, keyStalling.use(q), job.Id)
 		msg := Message{
@@ -472,7 +482,7 @@ func (q *Queue) finishJob(ctx context.Context, err error, result string, job *Jo
 		}
 		if err != nil {
 			job.status = StatusFailed
-			msg.Data = err.Error()
+			msg.Data, _ = json.Marshal(err.Error())
 			delay := int64(-1) // no retry
 			if job.options.Retries > 0 {
 				delay = job.options.Backoff.cal()
@@ -481,13 +491,13 @@ func (q *Queue) finishJob(ctx context.Context, err error, result string, job *Jo
 				if q.settings.RemoveOnFailure {
 					p.HDel(ctx, keyJobs.use(q), job.Id)
 				} else {
-					p.HSet(ctx, keyJobs.use(q), job.Id, job.toData())
+					p.HSet(ctx, keyJobs.use(q), job.Id, data())
 					p.SAdd(ctx, keyFailed.use(q), job.Id)
 				}
 			} else {
 				job.options.Retries -= 1
 				job.status = StatusRetrying
-				p.HSet(ctx, keyJobs.use(q), job.Id, job.toData())
+				p.HSet(ctx, keyJobs.use(q), job.Id, data())
 				if delay == 0 {
 					p.LPush(ctx, keyWaiting.use(q), job.Id)
 				} else {
@@ -505,13 +515,13 @@ func (q *Queue) finishJob(ctx context.Context, err error, result string, job *Jo
 			if q.settings.RemoveOnSuccess {
 				p.HDel(ctx, keyJobs.use(q), job.Id)
 			} else {
-				p.HSet(ctx, keyJobs.use(q), job.Id, job.toData())
+				p.HSet(ctx, keyJobs.use(q), job.Id, data())
 				p.SAdd(ctx, keySucceeded.use(q), job.Id)
 			}
 		}
 		if q.settings.SendEvents {
 			msg.Event = string(job.status)
-			v, _ := json.Marshal(msg)
+			v, _ := json.Marshal(msg) // TODO: log when marshal fail
 			p.Publish(ctx, keyEvents.use(q), string(v))
 		}
 		return nil
@@ -700,7 +710,9 @@ func (q *Queue) SaveAll(ctx context.Context, jobs []Job) error {
 	var loadAddJob, loadAddDelayedJob bool
 	p := q.redis.Pipeline()
 	for i := range jobs {
-		_ = jobs[i].save(ctx, p)
+		if _, err := jobs[i].save(ctx, p); err != nil {
+			return err
+		}
 		if jobs[i].options.Delay == 0 {
 			loadAddJob = true
 		} else {

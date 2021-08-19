@@ -22,7 +22,7 @@ func TestJob(t *testing.T) {
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
 
-	j, err := queue.NewJob(mockData(0)).Save(ctx)
+	j, err := queue.CreateJob(mockData(0)).Save(ctx)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "1", j.Id)
@@ -93,7 +93,7 @@ func TestJobGet(t *testing.T) {
 
 			ids := make(map[int]string)
 			for i := 1; i <= total; i++ {
-				j := queue.NewJob(mockData(i))
+				j := queue.CreateJob(mockData(i))
 				if i >= delayedIdx && i < activeIdx {
 					j.DelayUntil(time.Now().Add(time.Duration(i) * time.Hour))
 				}
@@ -335,7 +335,7 @@ func TestJobGetSpecial(t *testing.T) {
 
 	ids := make(map[int]string)
 	for i := 0; i < times; i++ {
-		j, err := queue.NewJob(mockData(i)).Save(ctx)
+		j, err := queue.CreateJob(mockData(i)).Save(ctx)
 		assert.NoError(t, err)
 		ids[i] = j.Id
 
@@ -423,7 +423,7 @@ func TestJobTimeout(t *testing.T) {
 	assert.NoError(t, err)
 
 	t.Run("Normal", func(t *testing.T) {
-		j := queue.NewJob(mockData(0)).Timeout(100)
+		j := queue.CreateJob(mockData(0)).Timeout(100)
 		assert.Equal(t, 100*time.Millisecond, msToDuration(j.options.Timeout))
 		assert.Equal(t, StatusCreated, j.status)
 
@@ -445,7 +445,7 @@ func TestJobTimeout(t *testing.T) {
 
 	t.Run("Retry", func(t *testing.T) {
 		times := atomic.LoadInt32(&times)
-		j := queue.NewJob(mockData(1)).Timeout(100).Retries(int(times) - 1)
+		j := queue.CreateJob(mockData(1)).Timeout(100).Retries(int(times) - 1)
 		assert.Equal(t, 100*time.Millisecond, msToDuration(j.options.Timeout))
 		assert.Equal(t, StatusCreated, j.status)
 
@@ -493,7 +493,7 @@ func TestJobBackoff(t *testing.T) {
 	assert.NoError(t, err)
 
 	t.Run("Immediate", func(t *testing.T) {
-		j := queue.NewJob(mockData(0)).Retries(times - 1).Backoff(Backoff{
+		j := queue.CreateJob(mockData(0)).Retries(times - 1).Backoff(Backoff{
 			Strategy: BackoffImmediate,
 		})
 		assert.Equal(t, Backoff{
@@ -522,7 +522,7 @@ func TestJobBackoff(t *testing.T) {
 	})
 
 	t.Run("Fixed", func(t *testing.T) {
-		j := queue.NewJob(mockData(0)).Retries(times - 1).Backoff(Backoff{
+		j := queue.CreateJob(mockData(0)).Retries(times - 1).Backoff(Backoff{
 			Strategy: BackoffFixed,
 			Delay:    1000,
 		})
@@ -554,7 +554,7 @@ func TestJobBackoff(t *testing.T) {
 	})
 
 	t.Run("Exponential", func(t *testing.T) {
-		j := queue.NewJob(mockData(0)).Retries(times - 1).Backoff(Backoff{
+		j := queue.CreateJob(mockData(0)).Retries(times - 1).Backoff(Backoff{
 			Strategy: BackoffExponential,
 			Delay:    500,
 		})
@@ -594,10 +594,10 @@ func TestJobRemove(t *testing.T) {
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
 
-	job1, err := queue.NewJob(mockData(0)).Save(ctx)
+	job1, err := queue.CreateJob(mockData(0)).Save(ctx)
 	assert.NoError(t, err)
 
-	job2, err := queue.NewJob(mockData(1)).Save(ctx)
+	job2, err := queue.CreateJob(mockData(1)).Save(ctx)
 	assert.NoError(t, err)
 
 	job1, err = queue.GetJob(ctx, job1.Id)

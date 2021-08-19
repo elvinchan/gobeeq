@@ -2,6 +2,7 @@ package gobeeq
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -39,14 +40,18 @@ func TestQueueProcess(t *testing.T) {
 			ch := make(chan struct{})
 			err = queue.Process(func(ctx Context) error {
 				t.Log("processing job:", ctx.GetId())
-				assert.Equal(t, mockData(i), ctx.GetData())
+				var v map[string]string
+				err := ctx.BindData(&v)
+				data, _ := json.Marshal(&v)
+				assert.NoError(t, err)
+				assert.Equal(t, mockData(i), json.RawMessage(data))
 				time.Sleep(time.Duration(cases[i]) * 100 * time.Millisecond)
 				ch <- struct{}{}
 				return nil
 			})
 			assert.NoError(t, err)
 
-			_, err = queue.NewJob(mockData(i)).Save(ctx)
+			_, err = queue.CreateJob(mockData(i)).Save(ctx)
 			assert.NoError(t, err)
 
 			select {
@@ -94,7 +99,7 @@ func TestQueueClose(t *testing.T) {
 
 	t.Run("Wait for finish", func(t *testing.T) {
 		queue := newQueue()
-		j, err := queue.NewJob("data").Save(ctx)
+		j, err := queue.CreateJob(nil).Save(ctx)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
@@ -106,7 +111,7 @@ func TestQueueClose(t *testing.T) {
 
 	t.Run("Not processed", func(t *testing.T) {
 		queue := newQueue()
-		j, err := queue.NewJob("data").Save(ctx)
+		j, err := queue.CreateJob(nil).Save(ctx)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
@@ -118,7 +123,7 @@ func TestQueueClose(t *testing.T) {
 
 	t.Run("Should stop timer", func(t *testing.T) {
 		queue := newQueue()
-		j, err := queue.NewJob("data").Save(ctx)
+		j, err := queue.CreateJob(nil).Save(ctx)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, j.Id)
 
@@ -139,7 +144,8 @@ func TestQueueDestroy(t *testing.T) {
 	queue, err := NewQueue(ctx, "test-queue-destroy", client)
 	assert.NoError(t, err)
 
-	j, err := queue.NewJob("data").Save(ctx)
+	emptyJSON, _ := json.Marshal(nil)
+	j, err := queue.CreateJob(emptyJSON).Save(ctx)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, j.Id)
 
@@ -164,7 +170,7 @@ func TestQueueSaveAll(t *testing.T) {
 
 		var jobs []Job
 		for i := 0; i < count; i++ {
-			j := queue.NewJob(mockData(i))
+			j := queue.CreateJob(mockData(i))
 			jobs = append(jobs, *j)
 		}
 		err = queue.SaveAll(ctx, jobs)
@@ -200,7 +206,7 @@ func TestQueueSaveAll(t *testing.T) {
 
 		var jobs []Job
 		for i := 0; i < count; i++ {
-			j := queue.NewJob(mockData(i))
+			j := queue.CreateJob(mockData(i))
 			if i%2 == 0 {
 				j.DelayUntil(time.Now().Add(time.Minute))
 			}
@@ -259,7 +265,7 @@ func TestQueueSaveAll(t *testing.T) {
 			saveAllJobs []Job
 		)
 		for i := 0; i < count; i++ {
-			j := queue.NewJob(mockData(i))
+			j := queue.CreateJob(mockData(i))
 			if i%2 == 0 {
 				j.DelayUntil(time.Now().Add(time.Minute))
 			}
@@ -323,7 +329,7 @@ func TestCheckStalledJobs(t *testing.T) {
 
 		go queue.CheckStalledJobs(interval / 2)
 
-		_, err = queue.NewJob(mockData(0)).Save(ctx)
+		_, err = queue.CreateJob(mockData(0)).Save(ctx)
 		assert.NoError(t, err)
 
 		workerClient := redis.NewClient(&redis.Options{
@@ -370,7 +376,7 @@ func TestCheckStalledJobs(t *testing.T) {
 		queue, err := NewQueue(ctx, name, client, WithStallInterval(interval))
 		assert.NoError(t, err)
 
-		_, err = queue.NewJob(mockData(0)).Save(ctx)
+		_, err = queue.CreateJob(mockData(0)).Save(ctx)
 		assert.NoError(t, err)
 
 		workerClient := redis.NewClient(&redis.Options{
@@ -422,7 +428,7 @@ func TestCheckHealth(t *testing.T) {
 
 	var jobs []Job
 	for i := 0; i < count; i++ {
-		j := queue.NewJob(mockData(i))
+		j := queue.CreateJob(mockData(i))
 		if i%2 == 0 {
 			j.DelayUntil(time.Now().Add(time.Minute))
 		}

@@ -24,14 +24,14 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func mockData(i int) string {
+func mockData(i int) json.RawMessage {
 	d := struct {
 		Foo string `json:"foo"`
 	}{
 		Foo: fmt.Sprintf("bar-%d", i),
 	}
 	v, _ := json.Marshal(d)
-	return string(v)
+	return v
 }
 
 func waitSync() {

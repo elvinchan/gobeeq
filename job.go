@@ -23,17 +23,18 @@ const (
 type Job struct {
 	Id      string
 	queue   *Queue
-	data    string
+	data    interface{}
 	options *Options
 	status  Status
 }
 
 type Options struct {
-	Timestamp int64   `json:"timestamp"` // ms
-	Timeout   int64   `json:"timeout"`   // ms
-	Delay     int64   `json:"delay"`     // ms
-	Retries   int     `json:"retries"`
-	Backoff   Backoff `json:"backoff"`
+	Timestamp   int64    `json:"timestamp"` // ms
+	Stacktraces []string `json:"stacktraces"`
+	Timeout     int64    `json:"timeout"` // ms
+	Delay       int64    `json:"delay"`   // ms
+	Retries     int      `json:"retries"`
+	Backoff     Backoff  `json:"backoff"`
 }
 
 func defaultOptions() *Options {
@@ -45,8 +46,8 @@ func defaultOptions() *Options {
 }
 
 type Data struct {
-	Data    string   `json:"data"`
-	Options *Options `json:"options"`
+	Data    json.RawMessage `json:"data"`
+	Options *Options        `json:"options"`
 	Status  `json:"status"`
 }
 
@@ -115,8 +116,10 @@ func (j *Job) Timeout(t int64) *Job {
 
 // Save save job and returns job pointer for chainable call.
 func (j *Job) Save(ctx context.Context) (*Job, error) {
-	cmder := j.save(ctx, j.queue.redis)
-	var err error
+	cmder, err := j.save(ctx, j.queue.redis)
+	if err != nil {
+		return nil, err
+	}
 	j.Id, err = cmder.Text()
 	if err != nil {
 		return nil, err
@@ -127,8 +130,11 @@ func (j *Job) Save(ctx context.Context) (*Job, error) {
 	return j, nil
 }
 
-func (j *Job) save(ctx context.Context, s redis.Scripter) *redis.Cmd {
-	data := j.toData()
+func (j *Job) save(ctx context.Context, s redis.Scripter) (*redis.Cmd, error) {
+	data, err := j.toData()
+	if err != nil {
+		return nil, err
+	}
 	if j.options.Delay != 0 {
 		// delay job
 		return j.queue.provider.AddDelayedJob().Run(
@@ -143,7 +149,7 @@ func (j *Job) save(ctx context.Context, s redis.Scripter) *redis.Cmd {
 			j.Id,
 			data,
 			j.options.Delay,
-		)
+		), nil
 	}
 	return j.queue.provider.AddJob().Run(
 		ctx,
@@ -155,7 +161,7 @@ func (j *Job) save(ctx context.Context, s redis.Scripter) *redis.Cmd {
 		},
 		j.Id,
 		data,
-	)
+	), nil
 }
 
 // Remove removes a job from the queue.
@@ -201,16 +207,24 @@ func (Job) fromData(queue *Queue, jobId string, data string) (*Job, error) {
 	if err := json.Unmarshal([]byte(data), &d); err != nil {
 		return nil, err
 	}
-	j := queue.newJobWithId(jobId, d.Data, d.Options)
+	j := queue.createJobWithId(jobId, d.Data, d.Options)
 	j.status = d.Status
 	return j, nil
 }
 
-func (j *Job) toData() string {
-	b, _ := json.Marshal(Data{
-		Data:    j.data,
+func (j *Job) toData() (string, error) {
+	data, ok := j.data.(json.RawMessage)
+	if !ok {
+		v, err := json.Marshal(j.data)
+		if err != nil {
+			return "", err
+		}
+		data = json.RawMessage(v)
+	}
+	b, err := json.Marshal(Data{
+		Data:    data,
 		Options: j.options,
 		Status:  j.status,
 	})
-	return string(b)
+	return string(b), err
 }

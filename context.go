@@ -2,6 +2,7 @@ package gobeeq
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -9,8 +10,10 @@ type Context interface {
 	context.Context
 
 	GetId() string
-	GetData() string
-	SetResult(r string)
+	BindData(i interface{}) error
+	SetResult(v interface{}) error
+	// TODO
+	// ReportProgress
 }
 
 var _ Context = (*jobContext)(nil)
@@ -18,20 +21,27 @@ var _ Context = (*jobContext)(nil)
 type jobContext struct {
 	ctx    context.Context
 	id     string
-	data   string
-	result string
+	data   json.RawMessage
+	result json.RawMessage
 }
 
 func (c *jobContext) GetId() string {
 	return c.id
 }
 
-func (c *jobContext) GetData() string {
-	return c.data
+// Bind binds the data of job into provided type `i`.
+func (c *jobContext) BindData(i interface{}) error {
+	return json.Unmarshal(c.data, i)
 }
 
-func (c *jobContext) SetResult(v string) {
-	c.result = v
+// SetResult set the result of job. It must be JSON serializable.
+func (c *jobContext) SetResult(v interface{}) error {
+	result, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	c.result = json.RawMessage(result)
+	return nil
 }
 
 func (c *jobContext) Deadline() (deadline time.Time, ok bool) {
