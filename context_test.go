@@ -3,6 +3,7 @@ package gobeeq
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,12 +184,12 @@ func TestContextProgress(t *testing.T) {
 	}
 
 	ch := make(chan struct{})
-	var i int
+	var i int32
 	queue, err := NewQueue(ctx, "test-context-report-progress", client,
 		WithSendEvents(true),
 		WithOnJobProgress(func(jobId string, progress json.RawMessage) {
-			c := cases[i]
-			i++
+			ni := atomic.AddInt32(&i, 1)
+			c := cases[ni-1]
 			assert.Equal(t, c.value, progress)
 			ch <- struct{}{}
 		}),
