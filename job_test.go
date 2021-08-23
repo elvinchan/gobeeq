@@ -83,6 +83,7 @@ func TestJobGet(t *testing.T) {
 			ctx := context.Background()
 			queue, err := NewQueue(ctx, name, client)
 			assert.NoError(t, err)
+			defer queue.Close()
 
 			total := c.succeeded + c.failed + c.delayed + c.active + c.waiting
 			succeededIdx := 1
@@ -115,7 +116,8 @@ func TestJobGet(t *testing.T) {
 				} else if id < delayedIdx { // failed
 					return errors.New("fail as expected")
 				}
-				select {}
+				<-ctx.Done()
+				return nil
 			})
 			assert.NoError(t, err)
 
