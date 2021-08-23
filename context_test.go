@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -143,5 +144,78 @@ func TestContextSetResult(t *testing.T) {
 	assert.NoError(t, err)
 	for i := 0; i < len(cases); i++ {
 		<-ch
+	}
+}
+
+func TestContextProgress(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	type T struct {
+		Name string `json:"name"`
+	}
+	cases := []struct {
+		data   interface{}
+		value  json.RawMessage
+		setErr string
+	}{
+		{
+			data:  map[string]int64{"t": 1},
+			value: json.RawMessage(`{"t":1}`),
+		},
+		{
+			data:  T{Name: "hello"},
+			value: json.RawMessage(`{"name":"hello"}`),
+		},
+		{
+			data:  "hello",
+			value: json.RawMessage(`"hello"`),
+		},
+		{
+			data:  nil,
+			value: json.RawMessage("null"),
+		},
+		{
+			data:   make(chan struct{}),
+			value:  json.RawMessage("null"),
+			setErr: "json: unsupported type: chan struct {}",
+		},
+	}
+
+	ch := make(chan struct{})
+	var i int
+	queue, err := NewQueue(ctx, "test-context-report-progress", client,
+		WithSendEvents(true),
+		WithOnJobProgress(func(jobId string, progress json.RawMessage) {
+			c := cases[i]
+			i++
+			assert.Equal(t, c.value, progress)
+			ch <- struct{}{}
+		}),
+	)
+	assert.NoError(t, err)
+
+	_, err = queue.CreateJob(nil).Save(ctx)
+	assert.NoError(t, err)
+
+	err = queue.Process(func(ctx Context) error {
+		t.Log("processing job:", ctx.GetId())
+		for _, c := range cases {
+			err := ctx.ReportProgress(c.data)
+			if c.setErr != "" {
+				assert.EqualError(t, err, c.setErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			time.Sleep(time.Millisecond * 100)
+		}
+		return nil
+	})
+	assert.NoError(t, err)
+
+	for _, c := range cases {
+		if c.setErr == "" {
+			<-ch
+		}
 	}
 }

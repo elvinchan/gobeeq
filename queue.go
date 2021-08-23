@@ -124,9 +124,18 @@ func NewQueue(
 	return q, nil
 }
 
+type Event string
+
+const (
+	EventSuccessed Event = "succeeded"
+	EventRetrying  Event = "retrying"
+	EventFailed    Event = "failed"
+	EventProgress  Event = "progress"
+)
+
 type Message struct {
 	Id    string          `json:"id"`
-	Event string          `json:"event"`
+	Event Event           `json:"event"`
 	Data  json.RawMessage `json:"data"`
 }
 
@@ -143,23 +152,23 @@ func (q *Queue) handleMessage(m *redis.Message) {
 		return
 	}
 	switch msg.Event {
-	case "succeeded":
+	case EventSuccessed:
 		if q.onSucceeded != nil {
 			q.onSucceeded(msg.Id, msg.Data)
 		}
-	case "retrying":
+	case EventRetrying:
 		if q.onRetrying != nil {
 			var errStr string
 			_ = json.Unmarshal(msg.Data, &errStr)
 			q.onRetrying(msg.Id, errors.New(errStr))
 		}
-	case "failed":
+	case EventFailed:
 		if q.onFailed != nil {
 			var errStr string
 			_ = json.Unmarshal(msg.Data, &errStr)
 			q.onFailed(msg.Id, errors.New(errStr))
 		}
-	case "progress":
+	case EventProgress:
 		if q.onProgress != nil {
 			q.onProgress(msg.Id, msg.Data)
 		}
@@ -431,9 +440,8 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	}()
 
 	jobCtx := &jobContext{
-		ctx:  ctx,
-		id:   j.Id,
-		data: j.data.(json.RawMessage),
+		ctx: ctx,
+		job: j,
 	}
 	var err error
 	if j.options.Timeout == 0 {
@@ -520,7 +528,7 @@ func (q *Queue) finishJob(ctx context.Context, err error, result json.RawMessage
 			}
 		}
 		if q.settings.SendEvents {
-			msg.Event = string(job.status)
+			msg.Event = Event(job.status)
 			v, _ := json.Marshal(msg) // TODO: log when marshal fail
 			p.Publish(ctx, keyEvents.use(q), string(v))
 		}
