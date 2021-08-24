@@ -21,6 +21,7 @@ func TestJob(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	j, err := queue.CreateJob(mockData(0)).Save(ctx)
 	assert.NoError(t, err)
@@ -332,6 +333,7 @@ func TestJobGetSpecial(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	times := 4
 
@@ -406,6 +408,7 @@ func TestJobTimeout(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	ch := make(chan struct{})
 	times := int32(3)
@@ -477,6 +480,7 @@ func TestJobBackoff(t *testing.T) {
 		WithActivateDelayedJobs(true, nil),
 	)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	records := make(map[string][]time.Time)
 	ch := make(map[string]chan struct{})
@@ -595,6 +599,7 @@ func TestJobRemove(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	job1, err := queue.CreateJob(mockData(0)).Save(ctx)
 	assert.NoError(t, err)

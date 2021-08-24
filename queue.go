@@ -303,7 +303,7 @@ func (q *Queue) ProcessConcurrently(
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := q.doStalledJobCheck(ctx); err != nil {
-			logger.Fatal(err)
+			logger.Print(err)
 		}
 		go q.jobTick(ctx)
 		<-q.stopCh
@@ -421,7 +421,7 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 			select {
 			case <-t.C:
 				if err := q.preventStall(j.Id); err != nil {
-					logger.Println(err)
+					logger.Print(err)
 				}
 			case <-done:
 				if !t.Stop() {
@@ -544,7 +544,7 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := q.doStalledJobCheck(ctx); err != nil {
-		logger.Fatal(err)
+		logger.Print(err)
 	}
 	q.mu.Lock()
 	if q.checkTimer != nil {
@@ -558,7 +558,7 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 		select {
 		case <-q.checkTimer.C:
 			if err := q.doStalledJobCheck(ctx); err != nil {
-				logger.Fatal(err)
+				logger.Print(err)
 			}
 		case <-q.stopCh:
 			return
@@ -781,11 +781,11 @@ func (q *Queue) activateDelayed(ctx context.Context) {
 		return err
 	})
 	if err != nil {
-		logger.Fatal(err)
+		logger.Print(err)
 	}
 	vs := v.([]interface{})
-	if vs == nil {
-		logger.Fatal("invalid result of raiseDelayedJobs")
+	if len(vs) == 0 {
+		logger.Print("invalid result of raiseDelayedJobs")
 	}
 	numRaised := vs[0].(int64)
 	nextOpportunity := vs[1].(int64)

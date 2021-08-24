@@ -21,6 +21,7 @@ func TestQueue(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
+	defer queue.Close()
 	assert.Equal(t, name, queue.name)
 }
 
@@ -35,6 +36,7 @@ func TestQueueProcess(t *testing.T) {
 			name := fmt.Sprintf("test-queue-process-%d", i)
 			queue, err := NewQueue(ctx, name, client)
 			assert.NoError(t, err)
+			defer queue.Close()
 			assert.Equal(t, name, queue.name)
 
 			ch := make(chan struct{})
@@ -68,6 +70,7 @@ func TestQueueRunning(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, "test-queue-running", client)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	assert.Equal(t, true, queue.IsRunning())
 
@@ -165,6 +168,7 @@ func TestQueueSaveAll(t *testing.T) {
 		ctx := context.Background()
 		queue, err := NewQueue(ctx, name, client)
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		count := 10
 
@@ -201,6 +205,7 @@ func TestQueueSaveAll(t *testing.T) {
 		ctx := context.Background()
 		queue, err := NewQueue(ctx, name, client)
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		count := 10
 
@@ -257,6 +262,7 @@ func TestQueueSaveAll(t *testing.T) {
 		ctx := context.Background()
 		queue, err := NewQueue(ctx, name, client)
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		count := 10
 
@@ -326,6 +332,7 @@ func TestCheckStalledJobs(t *testing.T) {
 		interval := time.Millisecond * 100
 		queue, err := NewQueue(ctx, name, client, WithStallInterval(interval))
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		go queue.CheckStalledJobs(interval / 2)
 
@@ -375,6 +382,7 @@ func TestCheckStalledJobs(t *testing.T) {
 		interval := time.Millisecond * 100
 		queue, err := NewQueue(ctx, name, client, WithStallInterval(interval))
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		_, err = queue.CreateJob(mockData(0)).Save(ctx)
 		assert.NoError(t, err)
@@ -422,6 +430,7 @@ func TestCheckHealth(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	count := 10
 	active := 2
@@ -483,6 +492,7 @@ func TestQueuePrefix(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, name, client, WithPrefix(prefix))
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	_, err = queue.CreateJob(mockData(0)).Save(ctx)
 	assert.NoError(t, err)
@@ -503,6 +513,7 @@ func TestQueueRemoveOnSuccess(t *testing.T) {
 		ctx := context.Background()
 		queue, err := NewQueue(ctx, name, client)
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		err = queue.Process(func(ctx Context) error {
 			return nil
@@ -524,6 +535,7 @@ func TestQueueRemoveOnSuccess(t *testing.T) {
 		ctx := context.Background()
 		queue, err := NewQueue(ctx, name, client, WithRemoveOnSuccess(true))
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		err = queue.Process(func(ctx Context) error {
 			return nil
@@ -546,6 +558,7 @@ func TestQueueRemoveOnFailure(t *testing.T) {
 		ctx := context.Background()
 		queue, err := NewQueue(ctx, name, client)
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		err = queue.Process(func(ctx Context) error {
 			t.Log("processing job:", ctx.GetId())
@@ -568,6 +581,7 @@ func TestQueueRemoveOnFailure(t *testing.T) {
 		ctx := context.Background()
 		queue, err := NewQueue(ctx, name, client, WithRemoveOnFailure(true))
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		err = queue.Process(func(ctx Context) error {
 			t.Log("processing job:", ctx.GetId())
@@ -590,6 +604,7 @@ func TestQueueRemoveOnFailure(t *testing.T) {
 		queue, err := NewQueue(ctx, name, client,
 			WithActivateDelayedJobs(true, nil), WithRemoveOnFailure(true))
 		assert.NoError(t, err)
+		defer queue.Close()
 
 		retries := 3
 		ch := make(chan struct{})
@@ -635,6 +650,7 @@ func TestQueueOnJobRetrying(t *testing.T) {
 		}),
 	)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	retries := 3
 	_, err = queue.CreateJob(nil).SetId(id).Retries(retries).Save(ctx)
@@ -668,6 +684,7 @@ func TestQueueOnJobFailed(t *testing.T) {
 		}),
 	)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	_, err = queue.CreateJob(nil).SetId(id).Save(ctx)
 	assert.NoError(t, err)
