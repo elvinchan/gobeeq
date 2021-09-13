@@ -480,6 +480,12 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 		}()
 		select {
 		case err = <-errc:
+			// make sure context error has higher priority
+			select {
+			case <-jobCtx.Done():
+				err = jobCtx.Err()
+			default:
+			}
 		case <-jobCtx.Done():
 			err = jobCtx.Err()
 		}

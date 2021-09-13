@@ -144,6 +144,7 @@ func TestQueueDestroy(t *testing.T) {
 	ctx := context.Background()
 	queue, err := NewQueue(ctx, "test-queue-destroy", client)
 	assert.NoError(t, err)
+	defer queue.Close()
 
 	emptyJSON, _ := json.Marshal(nil)
 	j, err := queue.CreateJob(emptyJSON).Save(ctx)
