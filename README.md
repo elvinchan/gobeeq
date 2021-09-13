@@ -1,3 +1,5 @@
+English | [简体中文](./README_zh-CN.md)
+
 # Gobeeq
 Golang implementation of [Bee-Queue](https://github.com/bee-queue/bee-queue). A simple, fast, robust job/task queue backed by Redis.
 
@@ -11,12 +13,12 @@ Golang implementation of [Bee-Queue](https://github.com/bee-queue/bee-queue). A 
 - **[Go](https://golang.org/)**: 1.13 and above.
 
 # Todo
-- Job store
 - Benchmark test
 
 # Notice
 - For compatible with the original **Bee-Queue**, all integer type of time/duration is millisecond format.
 - For more robust and efficiency scripts execution, there's no ensure scripts process, but use `Run()` of `github.com/go-redis/redis`, which optimistically uses `EVALSHA` to run the script, if the script does not exist it is retried using `EVAL`.
+- Since events is not associated with specific `Job` instances, this implementation do not provide `Job` store like the original **Bee-Queue**.
 
 ## License
 

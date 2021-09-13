@@ -9,6 +9,11 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/elvinchan/gobeeq.svg)](https://pkg.go.dev/github.com/elvinchan/gobeeq)
 [![MPLv2 License](https://img.shields.io/badge/license-MPLv2-blue.svg)](https://www.mozilla.org/MPL/2.0/)
 
+## 停滞集
+Bee-Queue尽可能提供["at least once delivery"](http://www.cloudcomputingpatterns.org/At-least-once_Delivery)。任何入队的Job应该被处理至少一次，如果Worker崩溃，离线，或者确认Job完成的请求失败了，Job将被重新调度到其他Worker去处理。
+
+为了实现此机制，Worker需要周期地回调Redis来确认正在运行的Job，就像是说：“我仍在运行此Job，没有停滞，请不要重试之”。`CheckStalledJobs`方法查找所有沉默了的活跃Job（在`StallInterval`ms周期内没有一次确认正在运行），认定它们已经停滞，发送一个带有Job ID的`stalled`事件，并将它们重新入队以便被其他Worker处理。
+
 ## 队列延迟Job激活说明
 
 除非`Queue`的`ActivateDelayedJobs`设置为`true`，否则延迟Job不会被激活。
@@ -27,8 +32,8 @@ Job激活的及时性由`Queue`的`DelayedDebounce`设置控制。此设置定�
 - `bq:name:succeeded`: (Set) 处理成功的Job ID集合
 - `bq:name:failed`: (Set) 处理失败的Job ID集合
 - `bq:name:delayed`: (Sorted Set) 延迟Job的ID有序集 —— Job ID为键，触发时间戳为分数
-- `bq:name:stalling`: (Set) 在当前时间间隔内未“签入”的JOB ID的集合
-- `bq:name:stallBlock`: (Set) 在当前时间间隔内未“签入”的JOB ID的集合
+- `bq:name:stalling`: (Set) 在当前时间间隔内未“签入”的Job ID的集合
+- `bq:name:stallBlock`: (Set) 在当前时间间隔内未“签入”的Job ID的集合
 - `bq:name:events`: (Pub/Sub channel) Worker发送Job结果的频道
 - `bq:name:earlierDelayed`: (Pub/Sub channel) 当在所有其他Job之前添加新的延迟Job时，创建该Job的脚本将通过该发布/订阅通道发布该Job的时间戳
 
