@@ -173,7 +173,6 @@ func (q *Queue) handleMessage(m *redis.Message) {
 			q.onProgress(msg.Id, msg.Data)
 		}
 	}
-	// TODO: handle for stored job
 }
 
 func (q *Queue) keyPrefix() string {
@@ -335,14 +334,20 @@ func (q *Queue) jobTick(ctx context.Context) {
 		q.endTick(ctx)
 		return
 	}
-	j, err := q.getNextJob(ctx)
-	if err != nil {
-		logger.Print(err)
-		go q.jobTick(ctx) // TODO: use retry?
+	var j *Job
+	_ = retry.Do(ctx, func(ctx context.Context, attempt uint) (err error) {
+		j, err = q.getNextJob(ctx)
+		if err != nil {
+			logger.Print(err)
+		}
 		return
-	}
+	}, retry.BackoffLimit(
+		retry.Linear(time.Millisecond*100), time.Second*2),
+	)
+
 	if !q.commandable(true) {
-		// This job will get picked up later as a stalled job if we happen to get here.
+		// This job will get picked up later as a stalled job if we happen to
+		// get here.
 		q.endTick(ctx)
 		return
 	}
@@ -410,7 +415,6 @@ func (q *Queue) getNextJob(ctx context.Context) (*Job, error) {
 	return Job{}.fromId(ctx, q, id)
 }
 
-// TODO: recovery
 func (q *Queue) runJob(ctx context.Context, j *Job) error {
 	done := make(chan struct{}, 1)
 	go func() {
@@ -443,9 +447,26 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 		ctx: ctx,
 		job: j,
 	}
+	doHandler := func() (err error) {
+		defer func() {
+			if e := recover(); e != nil {
+				switch e := e.(type) {
+				default:
+					err = ErrHandlerPanicked
+				case error:
+					err = e
+				case string:
+					err = errors.New(e)
+				}
+				logger.Print("recovered from panic:", e)
+			}
+		}()
+		err = q.handler(jobCtx)
+		return
+	}
 	var err error
 	if j.options.Timeout == 0 {
-		err = q.handler(jobCtx)
+		err = doHandler()
 	} else {
 		var cancel context.CancelFunc
 		jobCtx.ctx, cancel = context.WithTimeout(
@@ -455,13 +476,7 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 
 		errc := make(chan error, 1)
 		go func() {
-			err := q.handler(jobCtx)
-			// note: make sure err == DeadlineExceeded if jobCtx is done.
-			select {
-			case <-jobCtx.Done():
-			default:
-				errc <- err
-			}
+			errc <- doHandler()
 		}()
 		select {
 		case err = <-errc:
@@ -766,7 +781,7 @@ func (q *Queue) SaveAll(ctx context.Context, jobs []Job) error {
 
 func (q *Queue) activateDelayed(ctx context.Context) {
 	var v interface{}
-	err := retry.Do(ctx, func(ctx context.Context, attempt uint) error {
+	_ = retry.Do(ctx, func(ctx context.Context, attempt uint) error {
 		var err error
 		v, err = q.provider.RaiseDelayedJobs().Run(
 			ctx,
@@ -779,10 +794,9 @@ func (q *Queue) activateDelayed(ctx context.Context) {
 			q.settings.DelayedDebounce.Milliseconds(),
 		).Result()
 		return err
-	})
-	if err != nil {
-		logger.Print(err)
-	}
+	}, retry.BackoffLimit(
+		retry.Linear(time.Millisecond*100), time.Second*2),
+	)
 	vs := v.([]interface{})
 	if len(vs) == 0 {
 		logger.Print("invalid result of raiseDelayedJobs")

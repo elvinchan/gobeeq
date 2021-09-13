@@ -44,7 +44,7 @@ func WithDelayedDebounce(d time.Duration) QueueOption {
 	}
 }
 
-// TODO: merge these funcs to WithSettings()
+// WithSendEvents set if need send job events to queues.
 func WithSendEvents(b bool) QueueOption {
 	return func(q *Queue) {
 		q.settings.SendEvents = b

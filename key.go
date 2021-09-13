@@ -32,4 +32,5 @@ var (
 	ErrInvalidJobStatus         = errors.New("gobeeq: invalid job status")
 	ErrQueueClosed              = errors.New("gobeeq: queue is already closed")
 	ErrHandlerAlreadyRegistered = errors.New("gobeeq: handler already registered")
+	ErrHandlerPanicked          = errors.New("gobeeq: invoking handler caused a panic")
 )

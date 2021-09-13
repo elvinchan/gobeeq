@@ -55,8 +55,8 @@ func (c *jobContext) ReportProgress(p interface{}) error {
 		Data:  data,
 	}
 	v, _ := json.Marshal(msg)
-	c.job.queue.redis.Publish(c, keyEvents.use(c.job.queue), string(v)) // TODO: handle error?
-	return nil
+	return c.job.queue.redis.
+		Publish(c, keyEvents.use(c.job.queue), string(v)).Err()
 }
 
 func (c *jobContext) Deadline() (deadline time.Time, ok bool) {

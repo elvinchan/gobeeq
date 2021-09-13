@@ -73,8 +73,6 @@ func TestQueueRunning(t *testing.T) {
 	defer queue.Close()
 
 	assert.Equal(t, true, queue.IsRunning())
-
-	// TODO pause
 }
 
 func TestQueueClose(t *testing.T) {
@@ -668,32 +666,95 @@ func TestQueueOnJobRetrying(t *testing.T) {
 }
 
 func TestQueueOnJobFailed(t *testing.T) {
-	t.Parallel()
-	name := "test-queue-on-job-failed"
-	ctx := context.Background()
+	t.Run("Normal", func(t *testing.T) {
+		t.Parallel()
+		name := "test-queue-on-job-failed-normal"
+		ctx := context.Background()
 
-	ch := make(chan struct{})
-	e := "fail as expected"
-	id := "1"
-	queue, err := NewQueue(ctx, name, client,
-		WithSendEvents(true),
-		WithOnJobFailed(func(jobId string, err error) {
-			assert.Equal(t, id, jobId)
-			assert.EqualError(t, err, e)
-			ch <- struct{}{}
-		}),
-	)
-	assert.NoError(t, err)
-	defer queue.Close()
+		ch := make(chan struct{})
+		e := "fail as expected"
+		id := "1"
+		queue, err := NewQueue(ctx, name, client,
+			WithSendEvents(true),
+			WithOnJobFailed(func(jobId string, err error) {
+				assert.Equal(t, id, jobId)
+				assert.EqualError(t, err, e)
+				ch <- struct{}{}
+			}),
+		)
+		assert.NoError(t, err)
+		defer queue.Close()
 
-	_, err = queue.CreateJob(nil).SetId(id).Save(ctx)
-	assert.NoError(t, err)
+		_, err = queue.CreateJob(nil).SetId(id).Save(ctx)
+		assert.NoError(t, err)
 
-	err = queue.Process(func(ctx Context) error {
-		t.Log("processing job:", ctx.GetId())
-		return errors.New(e)
+		err = queue.Process(func(ctx Context) error {
+			t.Log("processing job:", ctx.GetId())
+			return errors.New(e)
+		})
+		assert.NoError(t, err)
+
+		<-ch
 	})
-	assert.NoError(t, err)
 
-	<-ch
+	t.Run("PanicError", func(t *testing.T) {
+		t.Parallel()
+		name := "test-queue-on-job-failed-panic-error"
+		ctx := context.Background()
+
+		ch := make(chan struct{})
+		e := "fail as expected"
+		id := "1"
+		queue, err := NewQueue(ctx, name, client,
+			WithSendEvents(true),
+			WithOnJobFailed(func(jobId string, err error) {
+				assert.Equal(t, id, jobId)
+				assert.EqualError(t, err, e)
+				ch <- struct{}{}
+			}),
+		)
+		assert.NoError(t, err)
+		defer queue.Close()
+
+		_, err = queue.CreateJob(nil).SetId(id).Save(ctx)
+		assert.NoError(t, err)
+
+		err = queue.Process(func(ctx Context) error {
+			t.Log("processing job:", ctx.GetId())
+			panic(e)
+		})
+		assert.NoError(t, err)
+
+		<-ch
+	})
+
+	t.Run("PanicUnknown", func(t *testing.T) {
+		t.Parallel()
+		name := "test-queue-on-job-failed-panic-unknown"
+		ctx := context.Background()
+
+		ch := make(chan struct{})
+		id := "1"
+		queue, err := NewQueue(ctx, name, client,
+			WithSendEvents(true),
+			WithOnJobFailed(func(jobId string, err error) {
+				assert.Equal(t, id, jobId)
+				assert.EqualError(t, err, ErrHandlerPanicked.Error())
+				ch <- struct{}{}
+			}),
+		)
+		assert.NoError(t, err)
+		defer queue.Close()
+
+		_, err = queue.CreateJob(nil).SetId(id).Save(ctx)
+		assert.NoError(t, err)
+
+		err = queue.Process(func(ctx Context) error {
+			t.Log("processing job:", ctx.GetId())
+			panic(0)
+		})
+		assert.NoError(t, err)
+
+		<-ch
+	})
 }
