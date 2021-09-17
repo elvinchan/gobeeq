@@ -1,14 +1,17 @@
 package gobeeq
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/elvinchan/util-collects/log"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 )
@@ -758,4 +761,33 @@ func TestQueueOnJobFailed(t *testing.T) {
 
 		<-ch
 	})
+}
+
+type testLogReceiver struct {
+	writer io.Writer
+}
+
+func (t *testLogReceiver) Output(i log.GetInfo, level log.Level,
+	fields map[string]interface{}, msg string) {
+	content := fmt.Sprintf("%s,%s,%s", i.Prefix(), level.String(), msg)
+	_, _ = t.writer.Write([]byte(content))
+}
+
+func TestQueueLogger(t *testing.T) {
+	t.Parallel()
+	name := "test-queue-logger"
+	content := "test log"
+
+	ctx := context.Background()
+	var buf bytes.Buffer
+	logger := log.NewLogger("gobq", &testLogReceiver{
+		writer: &buf,
+	})
+	logger.SetLevel(log.DebugLevel)
+	queue, err := NewQueue(ctx, name, client, WithLogger(logger))
+	assert.NoError(t, err)
+	defer queue.Close()
+
+	queue.logger.Debug(content)
+	assert.Equal(t, "gobq,DEBUG,"+content, buf.String())
 }

@@ -5,26 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/elvinchan/util-collects/log"
 	"github.com/elvinchan/util-collects/retry"
 	"github.com/go-redis/redis/v8"
 )
-
-var logger *log.Logger
-
-func init() {
-	SetLogger(log.New(os.Stderr, "gobeeq: ", log.LstdFlags|log.Lshortfile))
-}
-
-func SetLogger(l *log.Logger) {
-	logger = l
-}
 
 type Queue struct {
 	redis                *redis.Client
@@ -41,6 +30,7 @@ type Queue struct {
 	status               uint32 // 0 -> running, 1 -> closing, 2 -> closed
 	checkTimer           *time.Timer
 	delayedTimer         *EagerTimer
+	logger               log.Logger
 	stopCh               chan struct{}
 	doneCh               chan struct{}
 	once                 *sync.Once
@@ -81,6 +71,7 @@ func NewQueue(
 		settings: defaultSettings(),
 		provider: defaultScriptsProvider,
 		name:     name,
+		logger:   log.NewDefaultLogger(defaultSettings().Prefix),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 		once:     &sync.Once{},
@@ -302,7 +293,7 @@ func (q *Queue) ProcessConcurrently(
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		if err := q.doStalledJobCheck(ctx); err != nil {
-			logger.Print(err)
+			q.logger.WithError(err).Error("failed check stalled job")
 		}
 		go q.jobTick(ctx)
 		<-q.stopCh
@@ -338,7 +329,7 @@ func (q *Queue) jobTick(ctx context.Context) {
 	_ = retry.Do(ctx, func(ctx context.Context, attempt uint) (err error) {
 		j, err = q.getNextJob(ctx)
 		if err != nil {
-			logger.Print(err)
+			q.logger.WithError(err).Error("failed get next job")
 		}
 		return
 	}, retry.BackoffLimit(
@@ -365,7 +356,8 @@ func (q *Queue) jobTick(ctx context.Context) {
 		return
 	}
 	if err := q.runJob(ctx, j); err != nil {
-		logger.Print(err)
+		q.logger.WithField("jobId", j.Id).WithError(err).
+			Error("got error when run job")
 	}
 }
 
@@ -425,7 +417,7 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 			select {
 			case <-t.C:
 				if err := q.preventStall(j.Id); err != nil {
-					logger.Print(err)
+					q.logger.WithError(err).Error("failed prevent stall")
 				}
 			case <-done:
 				if !t.Stop() {
@@ -458,7 +450,8 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 				case string:
 					err = errors.New(e)
 				}
-				logger.Print("recovered from panic:", e)
+				q.logger.WithError(err).
+					Error("recovered from panic when execute handler")
 			}
 		}()
 		err = q.handler(jobCtx)
@@ -565,7 +558,7 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := q.doStalledJobCheck(ctx); err != nil {
-		logger.Print(err)
+		q.logger.WithError(err).Error("failed check stalled job")
 	}
 	q.mu.Lock()
 	if q.checkTimer != nil {
@@ -579,7 +572,7 @@ func (q *Queue) CheckStalledJobs(interval time.Duration) {
 		select {
 		case <-q.checkTimer.C:
 			if err := q.doStalledJobCheck(ctx); err != nil {
-				logger.Print(err)
+				q.logger.WithError(err).Error("failed check stalled job")
 			}
 		case <-q.stopCh:
 			return
@@ -805,7 +798,7 @@ func (q *Queue) activateDelayed(ctx context.Context) {
 	)
 	vs := v.([]interface{})
 	if len(vs) == 0 {
-		logger.Print("invalid result of raiseDelayedJobs")
+		q.logger.Error("activate delayed job got 0 jobs")
 	}
 	numRaised := vs[0].(int64)
 	nextOpportunity := vs[1].(int64)

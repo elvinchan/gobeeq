@@ -3,6 +3,8 @@ package gobeeq
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/elvinchan/util-collects/log"
 )
 
 type QueueOption func(*Queue)
@@ -119,5 +121,12 @@ func WithOnJobFailed(fn func(jobId string, err error)) QueueOption {
 func WithOnJobProgress(fn func(jobId string, progress json.RawMessage)) QueueOption {
 	return func(q *Queue) {
 		q.onProgress = fn
+	}
+}
+
+// WithLogger set custome logger.
+func WithLogger(l log.Logger) QueueOption {
+	return func(q *Queue) {
+		q.logger = l
 	}
 }
