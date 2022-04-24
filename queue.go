@@ -86,7 +86,7 @@ func NewQueue(
 			q.settings.NearTermWindow, q.activateDelayed,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("gobeeq: %v", err)
+			return nil, err
 		}
 	}
 	var channels []string
@@ -413,19 +413,14 @@ func (q *Queue) runJob(ctx context.Context, j *Job) error {
 		interval := q.settings.StallInterval / 2
 		t := time.NewTimer(interval)
 		for {
-			t.Reset(interval)
 			select {
 			case <-t.C:
 				if err := q.preventStall(j.Id); err != nil {
 					q.logger.WithError(err).Error("failed prevent stall")
 				}
+				t.Reset(interval)
 			case <-done:
-				if !t.Stop() {
-					select {
-					case <-t.C:
-					default:
-					}
-				}
+				t.Stop()
 				return
 			}
 		}

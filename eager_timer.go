@@ -12,11 +12,10 @@ import (
 type EagerTimer struct {
 	maxDelay time.Duration
 	fn       func(ctx context.Context)
-	timer    *time.Timer
 	nextTime time.Time // slightly earlier than actual trigger time
 	manual   chan struct{}
 	stopped  chan struct{}
-	mu       *sync.Mutex
+	mu       sync.Mutex
 }
 
 // New create an eager timer with maximun delay and callback function for
@@ -24,20 +23,19 @@ type EagerTimer struct {
 func NewEagerTimer(maxDelay time.Duration, fn func(ctx context.Context),
 ) (*EagerTimer, error) {
 	if maxDelay <= 0 {
-		return nil, errors.New("invalid maxDelay")
+		return nil, errors.New("gobeeq: invalid maxDelay")
 	} else if fn == nil {
-		return nil, errors.New("invalid fn")
+		return nil, errors.New("gobeeq: invalid fn")
 	}
 	et := &EagerTimer{
 		maxDelay: maxDelay,
 		fn:       fn,
-		manual:   make(chan struct{}),
+		manual:   make(chan struct{}, 1),
 		stopped:  make(chan struct{}),
-		mu:       &sync.Mutex{},
+		nextTime: time.Now().Add(maxDelay),
 	}
-	et.nextTime = time.Now().Add(et.maxDelay)
-	et.timer = time.NewTimer(et.maxDelay)
-	go et.loopExec()
+	t := time.NewTimer(et.maxDelay)
+	go et.loopExec(t)
 	return et, nil
 }
 
@@ -59,77 +57,65 @@ func (et *EagerTimer) Schedule(t time.Time) {
 	default:
 	}
 
+	et.mu.Lock()
+	defer et.mu.Unlock()
 	now := time.Now()
 	// 4 cases:
-	// t <= 0
-	// t > now + maxDelay
 	if t.IsZero() || t.After(now.Add(et.maxDelay)) {
-		et.mu.Lock()
-		// only overwrite the existing timer if later than the given time.
-		if now.Add(et.maxDelay).Before(et.nextTime) {
-			et.nextLocked(et.maxDelay)
-		}
-		et.mu.Unlock()
-	} else if t.Before(now) || t.Equal(now) {
+		// t <= 0
+		// t > now + maxDelay
+		t = now.Add(et.maxDelay)
+	} else if !t.After(now) {
 		// t <= now: trigger immediately, and reschedule to max delay.
-		et.mu.Lock()
-		et.immediateLocked()
-		et.mu.Unlock()
-	} else {
+		t = now
+		// } else {
 		// now < t < now + maxDelay
-		et.mu.Lock()
-		// only overwrite the existing timer if later than the given time.
-		if t.Before(et.nextTime) {
-			et.scheduleLocked(t)
-		}
-		et.mu.Unlock()
 	}
+	et.doSchedule(t)
 }
 
-func (et *EagerTimer) nextLocked(d time.Duration) {
-	if !et.timer.Stop() {
+func (et *EagerTimer) doSchedule(t time.Time) {
+	// only overwrite the existing timer if later than the given time.
+	if t.Before(et.nextTime) {
+		et.nextTime = t
 		select {
-		case <-et.timer.C:
+		case et.manual <- struct{}{}:
 		default:
 		}
 	}
-	et.nextTime = time.Now().Add(d)
-	et.timer.Reset(d)
 }
 
-func (et *EagerTimer) immediateLocked() {
-	et.nextLocked(et.maxDelay)
-	// try to notify executor to schedule immediately, if not received,
-	// the executor is busy now, do nothing.
-	select {
-	case et.manual <- struct{}{}:
-	default:
-	}
-}
-
-func (et *EagerTimer) scheduleLocked(t time.Time) {
-	if !et.timer.Stop() {
-		select {
-		case <-et.timer.C:
-		default:
-		}
-	}
-	et.nextTime = t
-	et.timer.Reset(time.Until(t))
-}
-
-func (et *EagerTimer) loopExec() {
+func (et *EagerTimer) loopExec(t *time.Timer) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for {
 		select {
 		case <-et.stopped:
+			t.Stop()
 			return
 		case <-et.manual:
-			et.fn(ctx)
-		case <-et.timer.C:
+			if !t.Stop() {
+				<-t.C
+			}
+			immediate := false
 			et.mu.Lock()
-			et.nextLocked(et.maxDelay)
+			now := time.Now()
+			if et.nextTime.After(now) {
+				t.Reset(et.nextTime.Sub(now))
+			} else {
+				immediate = true
+				// trigger immediate
+				et.nextTime = now.Add(et.maxDelay)
+				t.Reset(et.maxDelay)
+			}
+			et.mu.Unlock()
+			if immediate {
+				et.fn(ctx)
+			}
+		case <-t.C:
+			et.mu.Lock()
+			et.nextTime = time.Now().Add(et.maxDelay)
+			t.Reset(et.maxDelay)
 			et.mu.Unlock()
 			et.fn(ctx)
 		}
