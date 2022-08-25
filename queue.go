@@ -16,7 +16,7 @@ import (
 )
 
 type Queue struct {
-	redis                *redis.Client
+	redis                redis.UniversalClient
 	name                 string
 	settings             *Settings
 	provider             ScriptsProvider
@@ -61,7 +61,7 @@ func defaultSettings() *Settings {
 
 // NewQueue create a queue instance.
 func NewQueue(
-	ctx context.Context, name string, r *redis.Client, opts ...QueueOption,
+	ctx context.Context, name string, r redis.UniversalClient, opts ...QueueOption,
 ) (*Queue, error) {
 	if r == nil {
 		panic(ErrRedisClientRequired)
